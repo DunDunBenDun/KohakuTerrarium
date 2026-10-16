@@ -115,6 +115,32 @@ describe("paged history consumers", () => {
     vi.mocked(terrariumAPI.getHistoryPage).mockResolvedValueOnce(page([], { after: "a60" }))
     await chat._resyncHistory("root", { initialLoad: true })
     expect(chat.messagesByTab.root.length).toBe(merged)
+
+    const inline = [
+      { type: "text", text: "caption" },
+      {
+        type: "file",
+        file: { name: "a.bin", data_base64: "A".repeat(1024 * 1024) },
+        extension: { nested: [{ value: "original" }] },
+      },
+      { type: "vendor", extension: { value: [null, { keep: true }] } },
+    ]
+    const source = event(70, "user_message", { content: inline, pending_id: "inline-id" })
+    api.mockResolvedValueOnce(page([source], { older: false }))
+    await chat.initHistoryPage("root")
+    const row = chat.messagesByTab.root[0]
+    const echo = structuredClone(inline)
+    chat._onMessage({ type: "user_input", source: "root", pending_id: "inline-id", content: echo })
+    expect(chat.messagesByTab.root[0]).toBe(row)
+    expect(chat.messagesByTab.root).toHaveLength(1)
+    row.rawContent[2].extension.value[1].keep = false
+    echo[1].extension.nested[0].value = "echo changed"
+    expect(source.content[2].extension.value[1].keep).toBe(true)
+    expect(row.rawContent[1].extension.nested[0].value).toBe("original")
+    api.mockResolvedValueOnce(page([source], { older: false }))
+    await chat.initHistoryPage("root")
+    expect(chat.messagesByTab.root[0].rawContent[2].extension.value[1].keep).toBe(true)
+    expect(source.content[1].file.data_base64).toHaveLength(1024 * 1024)
   })
 
   it("keeps a delayed older response cache-only and rejects materialization after history mutation", async () => {
