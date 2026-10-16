@@ -92,6 +92,8 @@ from kohakuterrarium.terrarium.engine import Terrarium
 from kohakuterrarium.testing.llm import ScriptedLLM, ScriptEntry
 from kohakuterrarium.testing.output import OutputRecorder
 
+from tests.helpers.stable_compact_history import exercise_compact_media_history
+
 # ---------------------------------------------------------------------------
 # Deterministic tool stubs — real BaseTool subclasses, no faked methods.
 # ---------------------------------------------------------------------------
@@ -3347,6 +3349,7 @@ class TestCoreIntegration:
             await retained.stop()
             retained_store.close()
 
+        await exercise_compact_media_history(tmp_path, monkeypatch)
         await _exercise_user_attachment_history(tmp_path)
         await _exercise_direct_media_history(tmp_path, monkeypatch)
         await _exercise_assistant_media_history(tmp_path)

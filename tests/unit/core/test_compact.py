@@ -8,8 +8,11 @@ import pytest
 
 
 from kohakuterrarium.core.compact_branch import (
+    compact_rule_from_event,
     compute_replaced_range,
+    job_origin_pairs,
     persist_compacted_async,
+    summary_result_event_ids,
     summary_source_path,
     current_path,
 )
@@ -496,6 +499,92 @@ class TestCountKeepMessages:
         )
         messages.append(create_message("user", "legacy input"))
         assert summary_source_path(messages, origins={"bg": (2, 2)}) is None
+
+    def test_consumed_result_ids_keep_call_ownership_and_leave_later_result(self):
+        events = [
+            {
+                "event_id": 1,
+                "type": "user_message",
+                "turn_index": 1,
+                "branch_id": 1,
+            },
+            {
+                "event_id": 2,
+                "type": "tool_call",
+                "call_id": "c_old",
+                "job_id": "c_old",
+                "turn_index": 1,
+                "branch_id": 1,
+            },
+            {
+                "event_id": 3,
+                "type": "tool_result",
+                "call_id": "c_old",
+                "job_id": "c_old",
+                "output": [{"type": "image_url", "image_url": {"url": "data:old"}}],
+                "turn_index": 1,
+                "branch_id": 1,
+            },
+            {
+                "event_id": 4,
+                "type": "user_message",
+                "turn_index": 2,
+                "branch_id": 1,
+            },
+            {
+                "event_id": 5,
+                "type": "tool_call",
+                "call_id": "c_live",
+                "job_id": "c_live",
+                "turn_index": 2,
+                "branch_id": 1,
+            },
+            {
+                "event_id": 6,
+                "type": "tool_result",
+                "call_id": "c_live",
+                "job_id": "c_live",
+                "output": [{"type": "image_url", "image_url": {"url": "data:live"}}],
+                "turn_index": 2,
+                "branch_id": 1,
+            },
+        ]
+        captured = [
+            create_message(
+                "user",
+                "ask",
+                metadata={"turn_index": 1, "branch_id": 1},
+            ),
+            create_message(
+                "tool",
+                "consumed-media",
+                tool_call_id="c_old",
+                metadata={"job_id": "c_old", "result_event_id": 3},
+            ),
+        ]
+        origins = job_origin_pairs(events)
+        assert origins == {"c_old": (1, 1), "c_live": (2, 1)}
+        assert summary_source_path(captured, origins=origins) == {(1, 1)}
+        consumed = summary_result_event_ids(captured, events)
+        assert consumed == {3}
+        assert 6 not in consumed
+        rule = compact_rule_from_event(
+            {
+                "type": "compact_complete",
+                "replaced_from_event_id": 1,
+                "replaced_to_event_id": 2,
+                "compact_path": [[1, 1]],
+                "compact_source_path": [[1, 1]],
+                "compact_result_event_ids": sorted(consumed),
+                "summary": "S",
+            }
+        )
+        assert rule is not None
+        assert rule.result_event_ids == frozenset({3})
+        assert rule.covers(3, 1, 1) is True
+        assert rule.covers(2, 1, 1) is True
+        assert rule.covers(6, 2, 1) is False
+        assert rule.covers(5, 2, 1) is False
 
 
 # ── format_messages_for_summary ─────────────────────────────────
