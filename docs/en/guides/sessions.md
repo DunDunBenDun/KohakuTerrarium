@@ -55,6 +55,14 @@ Known limits in this release:
 - Snapshots restore stored messages and references, not missing artifact files, processes, or external side effects. Archive the session file together with its artifacts directory. Required missing local images fail request preparation instead of silently disappearing; remote URL availability is not guaranteed.
 - These guarantees cover the framework's existing text/image/file representations and the selected provider's capabilities. They do not promise lossless visual summaries or cross-provider history migration.
 
+### Stable multimodal history with compaction and checkpoints
+
+An edit to an uncompressed tail can reuse a summary whose source inputs are unchanged. Editing a turn consumed by that summary instead rebuilds the target prefix without the dependent summary. Returning to an earlier branch or resuming its compatible checkpoint uses that branch's effective context, including retained media and call/result relationships. Restoration alone does not rerun the original tools or summarization.
+
+Compaction sends a textual projection to the summarizer, not the original images for visual analysis. Media already replaced by the selected summary need not reappear in a later provider request, although the original events and available artifact files remain in the saved history. A later tool result that the summary did not consume is not covered merely because its call came from an ancestor turn; existing provenance and context-elision rules still apply.
+
+A checkpoint can contain already-elided tool output, while raw reconstruction may rehydrate that output before the current elision policy is reapplied. These representations need not be identical dictionaries. Compare effective context under the same summary, retained-user, and elision policy; legitimate rehydration is different from restoring media that the selected summary already consumed. Local-media availability is checked only for the final effective provider input, so excluded media do not block continuation and required missing media still fail explicitly. These rules apply to stable history, not history operations during active compaction or background work.
+
 ### Older session formats
 
 Some older writers recorded canonical messages with event, turn, and branch IDs
