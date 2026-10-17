@@ -181,7 +181,9 @@ async def exercise_compact_media_history(tmp_path, monkeypatch):
         )
         for regenerate in (False, True):
             if regenerate:
+                previous_requests = len(requests)
                 await agent.regenerate_last_response()
+                assert len(requests) == previous_requests + 1
             assert _images(requests[-1]) == [b"IMAGE_TAIL_B"]
             content = next(
                 item["content"]
