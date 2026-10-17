@@ -240,16 +240,21 @@ def _turn_path(path: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return [(t, b) for t, b in path if t > 0 and b > 0]
 
 
+_UNREAD_BRANCH_VIEW = object()
+
+
 def replayed_messages_for(
     store: Any,
     agent_name: str,
     events: list[dict] | None = None,
+    *,
+    branch_view: dict[int, int] | None | object = _UNREAD_BRANCH_VIEW,
 ) -> list[dict]:
     """Replay the latest live subtree from the event log (branch-aware).
 
     Used by resume when the saved snapshot belongs to a different branch.
     ``events`` is the caller's shared raw read; without it the store is
-    read here.
+    read here. An explicit ``branch_view`` uses that selection without rereading it.
     """
     if events is None:
         try:
@@ -258,10 +263,11 @@ def replayed_messages_for(
             return []
     if not events:
         return []
-    persisted = load_persisted_branch_view(store, agent_name)
+    if branch_view is _UNREAD_BRANCH_VIEW:
+        branch_view = load_persisted_branch_view(store, agent_name)
     return replay_with_settled_tools(
         events,
-        branch_view=persisted,
+        branch_view=branch_view,
         include_metadata=True,
         resumable=True,
     )

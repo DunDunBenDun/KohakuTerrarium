@@ -632,6 +632,130 @@ class TestAlignAgentName:
 
 class TestLoadConversationFallback:
     @pytest.mark.parametrize(
+        "source",
+        [
+            "fresh",
+            "unknown_watermark",
+            "backfill",
+            "tail",
+            "prepared",
+            "empty_checkpoint",
+            "empty_fork",
+        ],
+    )
+    def test_snapshot_and_partial_results_do_not_claim_full_replay(
+        self, tmp_path, source
+    ):
+        store = SessionStore(tmp_path / "provenance.kohakutr")
+        try:
+            snapshot = [
+                {
+                    "role": "user",
+                    "content": "snapshot-only",
+                    "metadata": {"turn_index": 1, "branch_id": 1},
+                }
+            ]
+            if source == "backfill":
+                snapshot[0].pop("metadata")
+            store.save_conversation("alice", snapshot)
+            event_type = (
+                "plugin_hook_timing" if source.startswith("empty_") else "user_message"
+            )
+            store.append_event(
+                "alice",
+                event_type,
+                {"content": "raw"},
+                turn_index=1,
+                branch_id=2 if source == "empty_fork" else 1,
+            )
+            store.state["alice:snapshot_event_id"] = 0 if source == "empty_fork" else 1
+            prepared = None
+            if source == "tail":
+                store.append_event(
+                    "alice",
+                    "user_message",
+                    {"content": "tail"},
+                    turn_index=2,
+                    branch_id=1,
+                    parent_branch_path=[(1, 1)],
+                )
+            elif source == "unknown_watermark":
+                store.state.pop("alice:snapshot_event_id", None)
+            elif source == "prepared":
+                prepared = {
+                    "messages": [{"role": "assistant", "content": "prepared-only"}]
+                }
+            elif source == "empty_checkpoint":
+                store.state["alice:branch_snapshots"] = [{"path": [[1, 1]]}]
+            loaded = resume_mod._load_conversation_result(
+                store, "alice", prepared=prepared
+            )
+            assert loaded.full_replay is False
+            assert loaded.branch_view is None
+            expected = {
+                "tail": ["snapshot-only", "tail"],
+                "prepared": ["prepared-only"],
+                "empty_checkpoint": [],
+            }.get(source, ["snapshot-only"])
+            assert [m["content"] for m in loaded.messages] == expected
+            assert (
+                _load_conversation_with_replay_fallback(
+                    store, "alice", prepared=prepared
+                )
+                == loaded.messages
+            )
+        finally:
+            store.close()
+
+    def test_explicit_replay_selection_does_not_reread_persisted_default(
+        self, tmp_path, monkeypatch
+    ):
+        store = SessionStore(tmp_path / "selection.kohakutr")
+        try:
+            for branch in (1, 2):
+                store.append_event(
+                    "alice",
+                    "user_message",
+                    {"content": f"branch-{branch}"},
+                    turn_index=1,
+                    branch_id=branch,
+                )
+            persist_branch_view(store, "alice", {1: 1})
+            events = store.get_events("alice")
+            assert [
+                m["content"]
+                for m in resume_branch_mod.replayed_messages_for(store, "alice", events)
+            ] == ["branch-1"]
+
+            def forbidden(*args):
+                raise AssertionError("explicit view must not reread selection")
+
+            monkeypatch.setattr(
+                resume_branch_mod, "load_persisted_branch_view", forbidden
+            )
+            assert [
+                m["content"]
+                for m in resume_branch_mod.replayed_messages_for(
+                    store, "alice", events, branch_view=None
+                )
+            ] == ["branch-2"]
+            assert [
+                m["content"]
+                for m in resume_branch_mod.replayed_messages_for(
+                    store, "alice", events, branch_view={1: 1}
+                )
+            ] == ["branch-1"]
+            assert resume_branch_mod.replayed_messages_for(store, "alice", []) == []
+            store.state["alice:branch_snapshots"] = [{"path": [[1, 1]]}]
+            monkeypatch.setattr(resume_mod, "load_persisted_branch_view", forbidden)
+            assert (
+                resume_mod._load_conversation_result(store, "alice", [], None).messages
+                == []
+            )
+        finally:
+            store.close()
+
+    @pytest.mark.parametrize(
         "rejection", ["compact_after_snapshot", "future_watermark"]
     )
     def test_rejected_branch_record_cannot_reuse_its_latest_mirror(
@@ -2575,10 +2699,29 @@ class TestInjectSavedState:
         finally:
             store.close()
 
-    def test_event_table_scanned_once_branch_mismatch_replay(self, tmp_path):
-        # Snapshot tagged on a sibling branch: the mismatch rebuild must
-        # reuse the same single raw read (the mismatch replay used to be
-        # an additional full scan).
+    @pytest.mark.parametrize("checkpoint", [False, True])
+    def test_event_table_scanned_once_branch_mismatch_replay(
+        self, tmp_path, monkeypatch, checkpoint
+    ):
+        replays = []
+        builds = []
+        replay = replay_with_settled_tools
+        build = _build_conversation
+
+        def counted_replay(events, **kwargs):
+            replays.append((len(events), kwargs.get("branch_view")))
+            return replay(events, **kwargs)
+
+        def counted_build(messages):
+            conv = build(messages)
+            builds.append(conv)
+            return conv
+
+        monkeypatch.setattr(resume_mod, "replay_with_settled_tools", counted_replay)
+        monkeypatch.setattr(
+            resume_branch_mod, "replay_with_settled_tools", counted_replay
+        )
+        monkeypatch.setattr(resume_mod, "_build_conversation", counted_build)
         store = SessionStore(str(tmp_path / "x.kohakutr"))
         try:
             store.append_event(
@@ -2603,6 +2746,17 @@ class TestInjectSavedState:
                 "branch_id": 1,
                 "parent_branch_path": [(1, 1)],
             }
+            if checkpoint:
+                store.save_branch_snapshot(
+                    "alice",
+                    [{"role": "user", "content": "stale"}],
+                    branch={
+                        "turn_index": 2,
+                        "branch_id": 1,
+                        "parent_branch_path": [(1, 1)],
+                    },
+                    watermark=2,
+                )
             # The agent lands on a SIBLING of the snapshot branch.
             store.append_event(
                 "alice",
@@ -2620,9 +2774,134 @@ class TestInjectSavedState:
                 for m in agent.controller.conversation.to_messages()
                 if m.get("role") == "user"
             ]
-            assert "b1" in contents
-            assert "a2" not in contents
+            assert contents == ["b1"]
+            assert agent._turn_index == 1
+            assert agent._branch_id == 2
+            assert agent._parent_branch_path == []
             assert counting.get_events_calls == 1
+            assert replays == [(3, None)]
+            assert builds == [agent.controller.conversation]
+        finally:
+            store.close()
+
+    @pytest.mark.parametrize("change", ["view", "predicate_view", "conversation"])
+    def test_full_replay_is_not_reused_after_restore_target_changes(
+        self, tmp_path, monkeypatch, change
+    ):
+        store = SessionStore(tmp_path / "changed.kohakutr")
+        try:
+            for branch in (1, 2, 3):
+                store.append_event(
+                    "alice",
+                    "user_message",
+                    {"content": f"branch-{branch}"},
+                    turn_index=1,
+                    branch_id=branch,
+                )
+            store.save_conversation("alice", [{"role": "user", "content": "stale"}])
+            store.state["alice:snapshot_event_id"] = 1
+            store.state["alice:snapshot_branch"] = {"turn_index": 1, "branch_id": 1}
+            persist_branch_view(store, "alice", {1: 2})
+            replays = []
+            replay = replay_with_settled_tools
+            restore = resume_mod._restore_turn_branch_state
+            mismatch = resume_mod.snapshot_mismatches_branch
+
+            def observe(events, **kwargs):
+                replays.append(kwargs["branch_view"])
+                return replay(events, **kwargs)
+
+            def change_target(agent, *args):
+                if change == "view":
+                    persist_branch_view(store, "alice", {1: 3})
+                restore(agent, *args)
+                if change == "conversation":
+                    agent.controller.conversation = Conversation()
+
+            def change_during_predicate(*args):
+                result = mismatch(*args)
+                if change == "predicate_view":
+                    persist_branch_view(store, "alice", {1: 3})
+                return result
+
+            monkeypatch.setattr(resume_mod, "replay_with_settled_tools", observe)
+            monkeypatch.setattr(resume_branch_mod, "replay_with_settled_tools", observe)
+            monkeypatch.setattr(resume_mod, "_restore_turn_branch_state", change_target)
+            monkeypatch.setattr(
+                resume_mod, "snapshot_mismatches_branch", change_during_predicate
+            )
+            agent = _FakeAgentForInject()
+            inject_saved_state(agent, store, "alice")
+            target = 2 if change == "conversation" else 3
+            assert self._contents(agent) == [f"branch-{target}"]
+            assert replays == [{1: 2}, {1: target}]
+        finally:
+            store.close()
+
+    def test_full_replay_preserves_elided_late_result_and_pending_history(
+        self, tmp_path, monkeypatch
+    ):
+        store = SessionStore(tmp_path / "elision.kohakutr")
+        try:
+            self._late_result_events(store, ("payload " * 3000,))
+            store.save_conversation("alice", [{"role": "user", "content": "stale"}])
+            store.state["alice:snapshot_event_id"] = 1
+            store.state["alice:snapshot_branch"] = {
+                "turn_index": 2,
+                "branch_id": 1,
+                "parent_branch_path": [(1, 1)],
+            }
+            events = store.get_events("alice")
+            expected = _build_conversation(
+                replay_with_settled_tools(
+                    events,
+                    branch_view={1: 1, 2: 2},
+                    include_metadata=True,
+                    resumable=True,
+                )
+            )
+            resume_mod.elide_stale_tool_results(expected)
+            expected_pending = store.get_resumable_events("alice")
+            replays = []
+            elisions = []
+            replay = replay_with_settled_tools
+            elide = resume_mod.elide_stale_tool_results
+
+            def observe_replay(*args, **kwargs):
+                replays.append(True)
+                return replay(*args, **kwargs)
+
+            def observe_elide(conv):
+                elisions.append(conv)
+                return elide(conv)
+
+            monkeypatch.setattr(resume_mod, "replay_with_settled_tools", observe_replay)
+            monkeypatch.setattr(
+                resume_branch_mod, "replay_with_settled_tools", observe_replay
+            )
+            monkeypatch.setattr(resume_mod, "elide_stale_tool_results", observe_elide)
+            agent = _FakeAgentForInject()
+            agent.controller.config = _ElideConfig()
+            agent.compact_manager = CompactManager(
+                CompactConfig(max_tokens=100, threshold=0.8)
+            )
+            inject_saved_state(agent, store, "alice")
+            assert agent.controller.conversation.to_messages(
+                include_metadata=True
+            ) == expected.to_messages(include_metadata=True)
+            messages = agent.controller.conversation.to_messages(include_metadata=True)
+            feedback = next(m for m in messages if m.get("tool_call_id") == "b1")
+            assert ELISION_MARKER in feedback["content"]
+            assert feedback["metadata"]["tool_results_elided"] is True
+            assert agent._pending_resume_events == expected_pending
+            assert store.get_events("alice") == events
+            assert (agent._turn_index, agent._branch_id, agent._parent_branch_path) == (
+                2,
+                2,
+                [(1, 1)],
+            )
+            assert replays == [True]
+            assert elisions == [agent.controller.conversation]
         finally:
             store.close()
 

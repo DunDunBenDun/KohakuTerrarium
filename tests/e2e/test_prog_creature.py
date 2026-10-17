@@ -42,6 +42,7 @@ from kohakuterrarium.llm.profile_types import LLMProfile
 from kohakuterrarium.modules.subagent.config import SubAgentConfig
 from kohakuterrarium.modules.tool.base import BaseTool, ExecutionMode, ToolResult
 from kohakuterrarium.modules.trigger.base import BaseTrigger
+from kohakuterrarium.session import resume_branch as _resume_branch_mod
 from kohakuterrarium.session.embedding import BaseEmbedder
 from kohakuterrarium.session.memory import SessionMemory
 from kohakuterrarium.session.resume import resume_agent
@@ -671,9 +672,29 @@ class TestProgCreatureJourney:
             "first recorded question",
             "second recorded question",
         ]
+        recorded_snapshot = record_store.load_conversation("pilot")
+        record_store.save_conversation("pilot", recorded_snapshot)
+        record_store.save_branch_snapshot(
+            "pilot",
+            recorded_snapshot,
+            branch={"turn_index": 2, "branch_id": 2, "parent_branch_path": [(1, 1)]},
+            watermark=record_store.max_event_id("pilot"),
+        )
         record_store.close()
 
-        resumed_agent, resumed_store = resume_agent(session_path)
+        replayed_histories = []
+        replay = _resume_branch_mod.replay_with_settled_tools
+
+        def observe_replay(events, **kwargs):
+            replayed_histories.append(len(events))
+            return replay(events, **kwargs)
+
+        with monkeypatch.context() as tracing:
+            tracing.setattr(
+                _resume_branch_mod, "replay_with_settled_tools", observe_replay
+            )
+            resumed_agent, resumed_store = resume_agent(session_path)
+        assert replayed_histories == [len(resumed_store.get_events("pilot"))]
         await resumed_agent.start()
         try:
             # The resumed conversation, rebuilt from the event log,
