@@ -1,5 +1,6 @@
 import { ElMessage } from "element-plus"
 import { getCurrentInstance, markRaw, toRaw } from "vue"
+import { snapshotContent } from "@/public/chat/contentSnapshot"
 import { extractReasoning, mergeReasoningSegments } from "@/utils/chatReasoning"
 import { reduceModelRecovery } from "./chatRecovery"
 
@@ -141,7 +142,7 @@ function _attentionEdgeSummary(data, streamedText) {
 }
 
 function normalizeMessageContent(content) {
-  const rawContent = Array.isArray(content) ? JSON.parse(JSON.stringify(content)) : content
+  const rawContent = Array.isArray(content) ? snapshotContent(content) : content
   const contentParts = normalizeContentParts(rawContent)
   return {
     content: typeof content === "string" ? content : extractTextContent(content),
