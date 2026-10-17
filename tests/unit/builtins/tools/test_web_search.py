@@ -764,7 +764,7 @@ async def test_direct_search_contract_and_fallback(monkeypatch, status, fallback
         )
     )
     result = await tool._execute(
-        {"query": "query", "limit": 2, "ori_question": "Original"}
+        {"query": "query", "limit": 2, "ori_question": "Original", "need_content": None}
     )
     assert captured == [
         {
@@ -841,3 +841,45 @@ async def test_inflight_search_keeps_original_fallback_policy(monkeypatch):
     release.set()
     result = await task
     assert "503" in result.error
+
+
+@pytest.mark.parametrize("backend", ["duckduckgo", "codex", "deepseek"])
+@pytest.mark.parametrize(
+    "extra,accepted",
+    [
+        ({}, True),
+        ({"need_content": False}, True),
+        ({"ori_question": None}, True),
+        ({"need_content": False, "ori_question": None}, True),
+        ({"need_content": None, "ori_question": None}, True),
+        ({"need_content": "false", "ori_question": ""}, True),
+        ({"need_content": True}, False),
+        ({"ori_question": "Original question"}, False),
+        ({"need_content": 0}, False),
+        ({"need_content": "invalid"}, False),
+    ],
+)
+async def test_other_backends_accept_inactive_direct_options(
+    monkeypatch, backend, extra, accepted
+):
+    calls = []
+
+    async def search(self, query, count, region):
+        calls.append((query, count, region))
+        return web_search.SearchResponse(
+            "Existing search", metadata={"backend": backend}
+        )
+
+    tool = WebSearchTool(ToolConfig(extra={"backend": backend, "need_content": True}))
+    monkeypatch.setattr(type(tool._backend()), "search", search)
+    result = await tool._execute(
+        {"query": "query", "max_results": 3, "region": "us-en", **extra}
+    )
+    assert result.success is accepted
+    if accepted:
+        assert calls == [("query", 3, "us-en")]
+        assert result.output == "Existing search"
+        assert result.metadata["backend"] == backend
+    else:
+        assert result.error
+        assert calls == []

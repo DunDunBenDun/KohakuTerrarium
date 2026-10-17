@@ -1952,7 +1952,7 @@ class TestModulesIntegration:
         agent = make_agent(
             script=[
                 ScriptEntry(
-                    "[/web_search]@@query=kt search\n[web_search/]",
+                    "[/web_search]@@query=kt search\n@@need_content=false\n[web_search/]",
                     match="search now",
                 ),
                 ScriptEntry("search complete", match="Grounded answer"),

@@ -304,8 +304,10 @@ class WebSearchTool(BaseTool):
                     return ToolResult(
                         error="deepseek_api uses localization (IP), not region"
                     )
+                need_content = args.get("need_content")
                 need_content = boolean_argument(
-                    args.get("need_content", self.need_content), "need_content"
+                    self.need_content if need_content is None else need_content,
+                    "need_content",
                 )
                 data = await DeepSeekWebClient().search(
                     query,
@@ -316,7 +318,11 @@ class WebSearchTool(BaseTool):
                 )
                 response = render_search(data, query, max_results, need_content)
             else:
-                if "need_content" in args or "ori_question" in args:
+                need_content = args.get("need_content")
+                if (
+                    need_content is not None
+                    and boolean_argument(need_content, "need_content")
+                ) or args.get("ori_question") not in (None, ""):
                     return ToolResult(
                         error="need_content and ori_question require backend=deepseek_api"
                     )
