@@ -109,8 +109,8 @@ const _turnRollupOptions = {
         this.turns = []
         this.total = 0
         this.windowOffset = 0
-        this.loadingOlder = false
       }
+      this.loadingOlder = false
       this.error = ""
       this.pageError = ""
       this.loading = true
@@ -157,7 +157,7 @@ const _turnRollupOptions = {
     },
 
     async loadOlder() {
-      if (!this.sessionName || !this.hasOlder || this.loadingOlder) return false
+      if (!this.sessionName || !this.hasOlder || this.loading || this.loadingOlder) return false
       const scope = _scopeOf(this)
       const generation = this.loadGeneration
       const offset = Math.max(0, this.windowOffset - TURN_PAGE_SIZE)
@@ -182,7 +182,8 @@ const _turnRollupOptions = {
         }
         return false
       } finally {
-        if (_scopeIsActive(this, scope)) this.loadingOlder = false
+        if (generation === this.loadGeneration && _scopeIsActive(this, scope))
+          this.loadingOlder = false
       }
     },
 

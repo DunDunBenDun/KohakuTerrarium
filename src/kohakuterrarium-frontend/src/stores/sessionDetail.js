@@ -21,6 +21,24 @@ import { sessionAPI } from "@/utils/api"
 
 const VALID_TABS = new Set(["overview", "trace", "conv", "cost", "find", "diff", "drives"])
 
+function agentNames(names) {
+  return [
+    ...new Set(names.filter((name) => typeof name === "string" && name && !name.startsWith("ch:"))),
+  ]
+}
+
+function requestIdentity(store, counter) {
+  const name = store.name
+  const binding = store.bindingGeneration
+  const epoch = store.loadEpoch
+  const request = ++store[counter]
+  return () =>
+    store.name === name &&
+    store.bindingGeneration === binding &&
+    store.loadEpoch === epoch &&
+    store[counter] === request
+}
+
 const _sessionDetailOptions = {
   state: () => ({
     name: "",
@@ -29,6 +47,16 @@ const _sessionDetailOptions = {
     targets: [],
     tree: null,
     summary: null,
+    bindingGeneration: 0,
+    loadEpoch: 0,
+    metaRequest: 0,
+    treeRequest: 0,
+    summaryRequest: 0,
+    discoveryRequest: 0,
+    metaStatus: "idle",
+    summaryStatus: "idle",
+    summaryAgents: [],
+    summaryError: "",
     loadingMeta: false,
     loadingTree: false,
     loadingSummary: false,
@@ -66,6 +94,22 @@ const _sessionDetailOptions = {
       for (const n of (state.meta && state.meta.agents) || []) add(n)
       return names
     },
+    traceDiscovery(state) {
+      if (["idle", "pending"].includes(state.summaryStatus)) return { status: "pending", agent: "" }
+      const summaryAgent = state.summaryAgents[0]
+      if (state.summaryStatus === "success" && summaryAgent)
+        return { status: "ready", agent: summaryAgent }
+      if (["idle", "pending"].includes(state.metaStatus)) return { status: "pending", agent: "" }
+      const candidates =
+        state.metaStatus === "success"
+          ? agentNames([...state.targets, ...(state.meta?.agents || [])])
+          : []
+      const preferred = state.meta?.viewer_default_agent
+      const agent = candidates.includes(preferred) ? preferred : candidates[0]
+      if (agent) return { status: "ready", agent }
+      const error = state.summaryError || state.error
+      return { status: error ? "error" : "empty", agent: "", error }
+    },
     primaryAgent() {
       return this.agents[0] || null
     },
@@ -94,7 +138,13 @@ const _sessionDetailOptions = {
       if (!name) return
       const isSwitch = name !== this.name
       this.name = name
+      this.loadEpoch++
+      this.metaStatus = "idle"
+      this.summaryStatus = "idle"
+      this.summaryAgents = []
+      this.summaryError = ""
       if (isSwitch) {
+        this.bindingGeneration++
         this.meta = null
         this.targets = []
         this.tree = null
@@ -106,12 +156,20 @@ const _sessionDetailOptions = {
 
     async loadMeta() {
       if (!this.name) return
+      const name = this.name
+      const current = requestIdentity(this, "metaRequest")
       this.loadingMeta = true
+      this.metaStatus = "pending"
+      this.error = ""
       try {
-        const data = await sessionAPI.getHistoryIndex(this.name)
+        const data = await sessionAPI.getHistoryIndex(name)
+        if (!current()) return
         this.meta = data.meta || null
         this.targets = data.targets || []
+        this.metaStatus = "success"
       } catch (err) {
+        if (!current()) return
+        this.metaStatus = err?.response?.status === 404 ? "not-found" : "error"
         // A just-started / unpersisted live session has no saved index
         // yet — a 404 is a benign empty state, not a load failure.
         if (err?.response?.status === 404) {
@@ -121,33 +179,60 @@ const _sessionDetailOptions = {
           this.error = `Failed to load session metadata: ${err.message || err}`
         }
       } finally {
-        this.loadingMeta = false
+        if (current()) this.loadingMeta = false
       }
     },
 
     async loadTree() {
       if (!this.name) return
+      const name = this.name
+      const current = requestIdentity(this, "treeRequest")
       this.loadingTree = true
       try {
-        this.tree = await sessionAPI.getTree(this.name)
+        const data = await sessionAPI.getTree(name)
+        if (current()) this.tree = data
       } catch (err) {
+        if (!current()) return
         console.warn("Failed to load session tree:", err)
         this.tree = null
       } finally {
-        this.loadingTree = false
+        if (current()) this.loadingTree = false
       }
     },
 
     async loadSummary(agent = null) {
       if (!this.name) return
+      const name = this.name
+      const current = requestIdentity(this, "summaryRequest")
+      const discoveryCurrent =
+        agent == null ? requestIdentity(this, "discoveryRequest") : () => false
+      if (agent == null) {
+        this.summaryStatus = "pending"
+        this.summaryAgents = []
+        this.summaryError = ""
+      }
       this.loadingSummary = true
       try {
-        this.summary = await sessionAPI.getSummary(this.name, agent)
+        const data = await sessionAPI.getSummary(name, agent)
+        if (current()) this.summary = data
+        if (discoveryCurrent()) {
+          this.summaryAgents = agentNames(data?.agents || [])
+          this.summaryStatus = "success"
+        }
       } catch (err) {
-        console.warn("Failed to load session summary:", err)
-        this.summary = null
+        if (current()) {
+          console.warn("Failed to load session summary:", err)
+          this.summary = null
+        }
+        if (discoveryCurrent()) {
+          this.summaryStatus = err?.response?.status === 404 ? "not-found" : "error"
+          this.summaryError =
+            this.summaryStatus === "error"
+              ? `Failed to load session summary: ${err.message || err}`
+              : ""
+        }
       } finally {
-        this.loadingSummary = false
+        if (current()) this.loadingSummary = false
       }
     },
   },
