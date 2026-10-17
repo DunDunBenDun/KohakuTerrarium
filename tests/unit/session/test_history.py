@@ -529,6 +529,203 @@ class TestReplayConversation:
             {"role": "user", "content": "msg1"},
         ]
 
+    def test_compact_coverage_keeps_live_canonical_and_drops_consumed_round(self):
+        consumed_canonical = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "consumed-post-hook"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,YQ=="},
+                    "extension": {"keep": True},
+                },
+                {"type": "file", "file": {"name": "old.txt", "content": "gone"}},
+            ],
+            "provider_extension": {"token": "consumed"},
+            "tool_calls": [
+                {
+                    "id": "c_old",
+                    "type": "function",
+                    "function": {"name": "echo", "arguments": "{}"},
+                }
+            ],
+        }
+        live_canonical = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "live-post-hook"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,Yg=="},
+                    "extension": {"keep": True},
+                },
+                {"type": "file", "file": {"name": "live.txt", "content": "kept"}},
+            ],
+            "provider_extension": {"token": "live-signed"},
+            "tool_calls": [
+                {
+                    "id": "c_live",
+                    "type": "function",
+                    "function": {"name": "echo", "arguments": "{}"},
+                }
+            ],
+        }
+        events = [
+            {
+                "event_id": 1,
+                "type": "user_message",
+                "content": "old question",
+                "turn_index": 1,
+                "branch_id": 1,
+                "parent_branch_path": [],
+            },
+            {
+                "event_id": 2,
+                "type": "assistant_round_start",
+                "turn_index": 1,
+                "branch_id": 1,
+                "parent_branch_path": [],
+            },
+            {
+                "event_id": 3,
+                "type": "text_chunk",
+                "content": "pre-hook-consumed",
+                "turn_index": 1,
+                "branch_id": 1,
+                "parent_branch_path": [],
+            },
+            {
+                "event_id": 4,
+                "type": "assistant_image",
+                "url": "https://display.invalid/consumed",
+                "turn_index": 1,
+                "branch_id": 1,
+                "parent_branch_path": [],
+            },
+            {
+                "event_id": 5,
+                "type": "tool_call",
+                "call_id": "c_old",
+                "name": "echo",
+                "args": {},
+                "turn_index": 1,
+                "branch_id": 1,
+                "parent_branch_path": [],
+            },
+            {
+                "event_id": 6,
+                "type": "tool_result",
+                "call_id": "c_old",
+                "name": "echo",
+                "output": [{"type": "text", "text": "consumed-tool-media"}],
+                "turn_index": 1,
+                "branch_id": 1,
+                "parent_branch_path": [],
+            },
+            {
+                "event_id": 7,
+                "type": "assistant_message",
+                "round_start_event_id": 2,
+                "message": consumed_canonical,
+                "turn_index": 1,
+                "branch_id": 1,
+                "parent_branch_path": [],
+            },
+            {
+                "event_id": 8,
+                "type": "user_message",
+                "content": "live question",
+                "turn_index": 2,
+                "branch_id": 1,
+                "parent_branch_path": [(1, 1)],
+            },
+            {
+                "event_id": 9,
+                "type": "assistant_round_start",
+                "turn_index": 2,
+                "branch_id": 1,
+                "parent_branch_path": [(1, 1)],
+            },
+            {
+                "event_id": 10,
+                "type": "text_chunk",
+                "content": "pre-hook-live",
+                "turn_index": 2,
+                "branch_id": 1,
+                "parent_branch_path": [(1, 1)],
+            },
+            {
+                "event_id": 11,
+                "type": "assistant_image",
+                "url": "https://display.invalid/live",
+                "turn_index": 2,
+                "branch_id": 1,
+                "parent_branch_path": [(1, 1)],
+            },
+            {
+                "event_id": 12,
+                "type": "tool_call",
+                "call_id": "c_live",
+                "name": "echo",
+                "args": {},
+                "turn_index": 2,
+                "branch_id": 1,
+                "parent_branch_path": [(1, 1)],
+            },
+            {
+                "event_id": 13,
+                "type": "tool_result",
+                "call_id": "c_live",
+                "name": "echo",
+                "output": [{"type": "text", "text": "live-result"}],
+                "turn_index": 2,
+                "branch_id": 1,
+                "parent_branch_path": [(1, 1)],
+            },
+            {
+                "event_id": 14,
+                "type": "assistant_message",
+                "round_start_event_id": 9,
+                "message": live_canonical,
+                "turn_index": 2,
+                "branch_id": 1,
+                "parent_branch_path": [(1, 1)],
+            },
+            {
+                "event_id": 15,
+                "type": "compact_complete",
+                "summary": "consumed-round-summary",
+                "round": 1,
+                "replaced_from_event_id": 1,
+                "replaced_to_event_id": 7,
+                "compact_path": [[1, 1]],
+                "compact_source_path": [[1, 1]],
+                "compact_result_event_ids": [6],
+                "turn_index": 2,
+                "branch_id": 1,
+                "parent_branch_path": [(1, 1)],
+            },
+        ]
+        expected = [
+            {
+                "role": "assistant",
+                "content": (
+                    "[Previous context summary (compact round 1)]"
+                    "\n\nconsumed-round-summary"
+                ),
+            },
+            {"role": "user", "content": "live question"},
+            live_canonical,
+            {
+                "role": "tool",
+                "content": [{"type": "text", "text": "live-result"}],
+                "tool_call_id": "c_live",
+                "name": "echo",
+            },
+        ]
+        assert replay_conversation(normalize_tool_call_events(events)) == expected
+        assert replay_conversation(events) == expected
+
 
 class TestReplayBranching:
     def test_latest_branch_wins_by_default(self):
