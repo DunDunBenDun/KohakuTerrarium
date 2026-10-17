@@ -35,6 +35,7 @@ from kohakuterrarium.core.branch_continuation import selected_branch_view
 from kohakuterrarium.core.events import create_user_input_event
 from kohakuterrarium.modules.tool.base import BaseTool, ExecutionMode, ToolResult
 from kohakuterrarium.modules.trigger.timer import TimerTrigger
+from kohakuterrarium.session import resume_branch as _resume_branch_mod
 from kohakuterrarium.session.attachment_service import get_attach_state
 from kohakuterrarium.session.embedding import BaseEmbedder
 from kohakuterrarium.session.errors import (
@@ -183,7 +184,9 @@ def _new_store(path, *, config_path: str, agents: list[str]) -> SessionStore:
 class TestSessionIntegration:
     """Each method = one full session workflow, start to finish."""
 
-    async def test_run_record_close_reopen_resume(self, patched_llm, tmp_path):
+    async def test_run_record_close_reopen_resume(
+        self, patched_llm, tmp_path, monkeypatch
+    ):
         """The canonical session integration workflow.
 
         init store → real Agent attaches it → run chat turns that write
@@ -803,6 +806,89 @@ class TestSessionIntegration:
             assert not verified.state.get("scribe:open_text")
         finally:
             verified.close(update_status=False)
+
+        fallback = SessionStore(session_path)
+        canonical = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "canonical resumed answer"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": (
+                            "data:image/png;base64,"
+                            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="
+                        )
+                    },
+                },
+            ],
+            "reasoning_content": "preserved reasoning",
+        }
+        try:
+            _, anchor = fallback.append_event(
+                "scribe",
+                "assistant_round_start",
+                {},
+                turn_index=3,
+                branch_id=1,
+                parent_branch_path=[(1, 1), (2, 1)],
+            )
+            fallback.append_event(
+                "scribe",
+                "assistant_message",
+                {"round_start_event_id": anchor, "message": canonical},
+                turn_index=3,
+                branch_id=1,
+                parent_branch_path=[(1, 1), (2, 1)],
+            )
+            snapshot = fallback.load_conversation("scribe")
+            fallback.save_conversation("scribe", snapshot)
+            fallback.save_branch_snapshot(
+                "scribe",
+                snapshot,
+                branch={
+                    "turn_index": 3,
+                    "branch_id": 2,
+                    "parent_branch_path": [(1, 1), (2, 1)],
+                },
+                watermark=fallback.max_event_id("scribe"),
+            )
+            expected_pending = fallback.get_resumable_events("scribe")
+        finally:
+            fallback.close(update_status=False)
+        replay_counts = []
+        replay = _resume_branch_mod.replay_with_settled_tools
+
+        def observe_replay(events, **kwargs):
+            replay_counts.append(len(events))
+            return replay(events, **kwargs)
+
+        with monkeypatch.context() as tracing:
+            tracing.setattr(
+                _resume_branch_mod, "replay_with_settled_tools", observe_replay
+            )
+            fallback_agent, fallback_store = await resume_agent_async(session_path)
+        try:
+            wire = fallback_agent.controller.conversation.to_messages()
+            assert [
+                m["content"]
+                for m in wire
+                if m.get("role") == "user" and m["content"] in recorded_user_turns
+            ] == recorded_user_turns
+            assert wire[-1]["content"] == canonical["content"]
+            assert wire[-1]["reasoning_content"] == canonical["reasoning_content"]
+            assert (fallback_agent._turn_index, fallback_agent._branch_id) == (3, 1)
+            assert fallback_agent._parent_branch_path == [(1, 1), (2, 1)]
+            assert fallback_agent._context_cutoff_event_id == 0
+            assert fallback_agent.session.scratchpad.get("project") == "terrarium"
+            assert [
+                t["trigger_id"] for t in fallback_agent._pending_resume_triggers
+            ] == [t2_id]
+            assert fallback_agent._pending_resume_events == expected_pending
+            assert replay_counts == [len(fallback_store.get_events("scribe"))]
+        finally:
+            await fallback_agent._session_output.drain()
+            await asyncio.to_thread(fallback_store.close, update_status=False)
 
         # An unknown io_mode is rejected loudly before any agent is built.
         with pytest.raises(ValueError, match="Unknown IO mode"):
