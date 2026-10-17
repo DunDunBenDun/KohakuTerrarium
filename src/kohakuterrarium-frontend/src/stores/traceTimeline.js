@@ -39,8 +39,8 @@ const _traceTimelineOptions = {
       if (isSwitch) {
         this.records = []
         this.truncated = false
-        this.error = ""
       }
+      this.error = ""
       this.loading = true
       this.loadingGeneration = generation
       try {
