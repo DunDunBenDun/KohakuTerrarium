@@ -136,6 +136,23 @@ explicit detail and search options still read their contents. Opening an old ses
 without a persisted event counter can still scan event values during Store construction.
 The key-only summary optimization does not remove that separate legacy startup cost.
 
+### Saved Conversation statistics on demand
+
+Opening or refreshing a saved Session Viewer's **Conversation** tab loads the
+history index, tree and history page without computing the statistics summary.
+The index's `viewer_agents` lists main and attached agents in the same default
+order as an unfiltered summary **of the same store**, not a cluster-wide merged
+summary. History indexes still address one store; `targets` remains the unchanged
+set of legal Conversation targets, including channels. Attached discovery does not make an
+attached namespace a new Conversation target.
+
+Switching to Trace, Overview or Cost requests the current summary if needed;
+successful or pending summaries are reused within that data refresh. Trace still
+waits for the unfiltered summary's default choice unless the user selects an
+agent explicitly. Live Inspector summaries and header totals keep refreshing,
+even on Conversation. Key-only agent enumeration does not remove old Store
+initialization scans when persisted counters are missing.
+
 ## What persists
 
 On each turn KohakuTerrarium records:

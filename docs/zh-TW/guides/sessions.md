@@ -108,6 +108,19 @@ python scripts/inspect_session.py /path/to/saved.kohakutr --all --search "query"
 選項仍會讀取內容。開啟沒有持久化事件計數器的舊工作階段時，Store 建構階段仍可能
 掃描事件值。僅按 key 統計摘要的最佳化並未消除這項獨立的舊版啟動成本。
 
+### 已儲存 Conversation 的統計按需載入
+
+開啟或重新整理已儲存工作階段檢視器的 **Conversation** 分頁時，會載入歷史索引、樹和
+歷史頁，不主動計算統計摘要。索引中的 `viewer_agents` 按**同一個 Store** 未篩選摘要的
+預設順序列出主代理和 attached 代理，不代表叢集合併摘要的完整目錄。歷史索引仍只對應
+一個 Store；`targets` 保留原有合法 Conversation 目標（含頻道），發現
+attached 命名空間不會自動將其變成新的 Conversation 目標。
+
+切換至 Trace、Overview 或 Cost 時，才按需請求目前的摘要；同一資料重新整理代次重用
+已成功或進行中的摘要請求。除非使用者明確選擇代理，Trace 仍等待未篩選摘要決定預設
+選擇。Live Inspector 即使停留在 Conversation，也保持摘要與 header 總量更新。僅列舉
+key 的代理探索不會消除舊工作階段缺少持久化計數器時的 Store 初始化掃描。
+
 ## 存了什麼
 
 每個輪次 KohakuTerrarium 會記錄：
