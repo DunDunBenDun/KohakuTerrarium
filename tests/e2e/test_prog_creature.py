@@ -772,7 +772,58 @@ class TestProgCreatureJourney:
             if event["type"] == "user_input"
             and str(event["content"]).startswith("owned input")
         ] == ["owned input one", "owned input two"]
+        checkpoint_messages = [
+            dict(message.to_dict(), metadata=message.metadata)
+            for message in resumed_agent.controller.conversation.get_messages()
+        ]
         resumed_store.close()
+
+        patched_llm["script"] = ["continued regenerated lineage"]
+        continued_agent, continued_store = resume_agent(session_path)
+        try:
+            assert [
+                dict(message.to_dict(), metadata=message.metadata)
+                for message in continued_agent.controller.conversation.get_messages()
+            ] == checkpoint_messages
+            assert (continued_agent._turn_index, continued_agent._branch_id) == (4, 1)
+            assert continued_agent._parent_branch_path == [(1, 1), (2, 2), (3, 1)]
+            assert (
+                continued_agent._pending_resume_events
+                == continued_store.get_resumable_events("pilot")
+            )
+            await continued_agent.start()
+            result = await continued_agent.run("continue regenerated lineage")
+            assert result.text == "continued regenerated lineage"
+            assert (continued_agent._turn_index, continued_agent._branch_id) == (5, 1)
+            assert continued_agent._parent_branch_path == [
+                (1, 1),
+                (2, 2),
+                (3, 1),
+                (4, 1),
+            ]
+        finally:
+            await continued_agent.stop()
+            continued_store.close()
+        verified = SessionStore.open_readonly(session_path)
+        try:
+            continued_users = [
+                event
+                for event in verified.get_events("pilot")
+                if event["type"] == "user_message"
+            ]
+            assert continued_users[-1]["content"] == "continue regenerated lineage"
+            assert (
+                continued_users[-1]["turn_index"],
+                continued_users[-1]["branch_id"],
+            ) == (5, 1)
+            assert continued_users[-1]["parent_branch_path"] == [
+                [1, 1],
+                [2, 2],
+                [3, 1],
+                [4, 1],
+            ]
+        finally:
+            verified.close(update_status=False)
 
         # FTS keyword search finds the EXACT recorded user turn.
         fts_memory = SessionMemory(str(session_path), embedder=None)

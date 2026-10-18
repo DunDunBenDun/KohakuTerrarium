@@ -193,8 +193,9 @@ def prepare_snapshot(
     needs_replay: Callable,
     before_turn: int | None = None,
     records: list[dict] | None = None,
+    parent_paths: dict[int, tuple[tuple[int, int], ...]] | None = None,
 ) -> dict | None:
-    """Restore a proven checkpoint prefix from validated records, loading when omitted."""
+    """Restore a checkpoint prefix; supplied paths match unchanged raw events and order."""
     if records is None:
         records = load_records(store, namespace)
     if not records:
@@ -204,8 +205,10 @@ def prepare_snapshot(
         for event in events
         if event.get("type") == "user_message"
     }
-    live_ids = select_live_event_ids(events, branch_view=selected)
-    covered = compact_covered_event_ids(events, selected)
+    live_ids = select_live_event_ids(
+        events, branch_view=selected, parent_paths=parent_paths
+    )
+    covered = compact_covered_event_ids(events, selected, parent_paths=parent_paths)
     candidates, repairs = [], []
     for record in records:
         if not set(map(tuple, record["path"])).issubset(raw_pairs) or not _fresh(
