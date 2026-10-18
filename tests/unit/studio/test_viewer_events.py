@@ -1,8 +1,11 @@
 """Unit tests for :mod:`kohakuterrarium.studio.persistence.viewer.events`."""
 
-import pytest
-from kohakuterrarium.errors import NotFoundError
+from contextlib import closing
 
+import pytest
+from kohakuvault import KVault
+
+from kohakuterrarium.errors import NotFoundError
 from kohakuterrarium.session.store import SessionStore
 from kohakuterrarium.studio.persistence.viewer.events import (
     build_events_payload,
@@ -42,7 +45,157 @@ def _store(tmp_path) -> SessionStore:
     return SessionStore(str(tmp_path / "s.kohakutr"))
 
 
+def _page(store, **overrides):
+    options = dict(
+        agent="alice",
+        turn_index=None,
+        types=None,
+        from_ts=None,
+        to_ts=None,
+        limit=200,
+        cursor=None,
+    )
+    options.update(overrides)
+    return build_events_payload(store, "sess", **options)
+
+
 class TestBuildEventsPayload:
+    def test_value_budget_and_full_page_cursor(self, tmp_path, monkeypatch):
+        with closing(_store(tmp_path)) as store:
+            store.init_meta("sess", "agent", "/p", "/w", ["alice"])
+            for index in range(401):
+                store.append_event("alice", "x", {"ts": index}, turn_index=index)
+            expected = store.get_events("alice")
+            reads = []
+            original = KVault.__getitem__
+
+            def read(table, key):
+                if table is store.events:
+                    reads.append(key)
+                return original(table, key)
+
+            monkeypatch.setattr(KVault, "__getitem__", read)
+            first = _page(store)
+            assert first["events"] == expected[:200]
+            assert first["next_cursor"] == 200
+            assert len(reads) == 200
+            reads.clear()
+            second = _page(store, cursor=200)
+            assert second["events"] == expected[200:400]
+            assert second["next_cursor"] == 400
+            assert len(reads) == 400
+            reads.clear()
+            last = _page(store, cursor=400, limit=1)
+            assert last["events"] == expected[400:]
+            assert last["next_cursor"] == 401
+            assert len(reads) == 401
+            reads.clear()
+            assert _page(store, cursor=401)["events"] == []
+            assert len(reads) == 401
+            reads.clear()
+            sparse = _page(
+                store, turn_index=400, types=" x, x ", from_ts=400, to_ts=400
+            )
+            assert sparse["events"] == expected[400:]
+            assert sparse["next_cursor"] is None
+            assert sparse["filters"]["types"] == ["x"]
+            assert len(reads) == 401
+            reads.clear()
+            assert store.get_events("alice") == expected
+            assert len(reads) == 401
+
+    def test_physical_order_and_cursor_types(self, tmp_path):
+        with closing(_store(tmp_path)) as store:
+            store.init_meta("sess", "agent", "/p", "/w", ["alice"])
+            rows = [
+                ("alice:e10", {"event_id": "7", "type": "x", "ts": "2"}),
+                ("alice:e2", {"event_id": 3, "type": "x", "ts": 2}),
+                ("alice:e9", {"event_id": True, "type": "y"}),
+                ("alice:ez", {"type": "x"}),
+            ]
+            for key, value in reversed(rows):
+                store.events[key] = value
+            expected = [value for _, value in rows]
+            assert store.get_events("alice") == expected
+            assert store.get_events("alice", since_event_id=2) == [expected[1]]
+            assert _page(store)["events"] == expected
+            assert _page(store, limit=1)["next_cursor"] is None
+            assert _page(store, cursor=4, from_ts=2, to_ts=2)["events"] == expected[:1]
+            assert _page(store, cursor=0, limit=3)["next_cursor"] is True
+            assert _page(store, types="absent")["events"] == []
+
+    def test_consumed_bad_value_logs_but_unread_tail_does_not(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        with closing(_store(tmp_path)) as store:
+            store.init_meta("sess", "agent", "/p", "/w", ["alice"])
+            for _ in range(5):
+                store.append_event("alice", "x", {})
+            store.flush()
+            original = KVault.__getitem__
+            reads = []
+
+            def read(table, key):
+                if table is store.events:
+                    text = key.decode() if isinstance(key, bytes) else key
+                    reads.append(text)
+                    if text in {"alice:e000000", "alice:e000003"}:
+                        raise ValueError("bad:" + text)
+                return original(table, key)
+
+            monkeypatch.setattr(KVault, "__getitem__", read)
+            page = _page(store, limit=2)
+            assert [ev["event_id"] for ev in page["events"]] == [2, 3]
+            assert page["next_cursor"] == 3
+            assert reads == [f"alice:e{index:06d}" for index in range(3)]
+            assert "Failed to read event" in caplog.text
+            assert {record.name for record in caplog.records} == {
+                "kohakuterrarium.session.store"
+            }
+            assert "bad:alice:e000000" in caplog.text
+            assert "bad:alice:e000003" not in caplog.text
+            caplog.clear()
+            assert [ev["event_id"] for ev in store.get_events("alice")] == [2, 3, 5]
+            assert "bad:alice:e000003" in caplog.text
+
+    @pytest.mark.parametrize(
+        "value, filters, error",
+        [
+            ({"event_id": "bad-id"}, {"cursor": 0}, ValueError),
+            ({"ts": "bad-ts"}, {"from_ts": 0}, ValueError),
+            ("not-a-dict", {"cursor": 0}, AttributeError),
+        ],
+    )
+    def test_decoded_filter_errors_are_not_skipped(
+        self, tmp_path, value, filters, error
+    ):
+        with closing(_store(tmp_path)) as store:
+            store.init_meta("sess", "agent", "/p", "/w", ["alice"])
+            store.events["alice:e000000"] = value
+            assert store.get_events("alice") == [value]
+            assert store.get_events("alice", since_event_id=0) == []
+            with pytest.raises(error):
+                _page(store, **filters)
+
+    def test_enumeration_failure_propagates(self, tmp_path, monkeypatch):
+        with closing(_store(tmp_path)) as store:
+            store.init_meta("sess", "agent", "/p", "/w", ["alice"])
+            store.append_event("alice", "x", {})
+            original = KVault.keys
+
+            def failed_keys():
+                yield b"alice:e000000"
+                raise RuntimeError("enumeration failed")
+
+            def keys(table, *args, **kwargs):
+                if table is store.events and kwargs.get("prefix") == "alice:e":
+                    return failed_keys()
+                return original(table, *args, **kwargs)
+
+            monkeypatch.setattr(KVault, "keys", keys)
+            with pytest.raises(RuntimeError, match="enumeration failed"):
+                _page(store, limit=1)
+
     def test_basic(self, tmp_path):
         s = _store(tmp_path)
         try:

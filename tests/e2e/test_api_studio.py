@@ -34,6 +34,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from kohakuvault import KVault
 
 from kohakuterrarium.llm import antigravity_auth as agy_auth
 from kohakuterrarium.api.app import create_app
@@ -811,6 +812,7 @@ class TestApiStudioJourney:
         client: TestClient,
         workspace_root: Path,
         scripted_llm: ScriptedLLM,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Run a turn → saved-session list → viewer panes → fork → diff
         → resume → attach hints.
@@ -856,6 +858,45 @@ class TestApiStudioJourney:
         )
         assert resp.status_code == 200
         assert resp.json() == {"response": _REPLY_ONE}
+
+        def assert_event_pages(name):
+            url = f"/api/sessions/{name}/events"
+            full_response = client.get(url, params={"limit": 1000})
+            assert full_response.status_code == 200
+            expected = full_response.json()["events"]
+            reads = []
+            original_read = KVault.__getitem__
+
+            def read_event_value(table, key):
+                text = key.decode() if isinstance(key, bytes) else key
+                if isinstance(text, str) and text.startswith("viewer:e"):
+                    reads.append(text)
+                return original_read(table, key)
+
+            with monkeypatch.context() as counters:
+                counters.setattr(KVault, "__getitem__", read_event_value)
+                cursor = None
+                for index in range(2):
+                    reads.clear()
+                    params = {"limit": 1}
+                    if cursor is not None:
+                        params["cursor"] = cursor
+                    response = client.get(url, params=params)
+                    assert response.status_code == 200
+                    page = response.json()
+                    assert page["events"] == expected[index : index + 1]
+                    cursor = expected[index]["event_id"]
+                    assert page["next_cursor"] == cursor
+                    assert len(reads) == index + 1
+                reads.clear()
+                response = client.get(url, params={"types": "not-present", "limit": 1})
+                assert response.status_code == 200
+                assert response.json()["events"] == []
+                assert response.json()["next_cursor"] is None
+                assert len(reads) == len(expected)
+            return expected
+
+        live_events = assert_event_pages(session_id)
 
         # Stop the live session first — on Windows the SQLite handle
         # must be released before the viewer / resume re-open the file.
@@ -903,6 +944,8 @@ class TestApiStudioJourney:
         assert all(e["type"] == "user_input" for e in events)
         event_blob = str(events)
         assert "remember this turn" in event_blob
+        saved_events = assert_event_pages(saved_name)
+        assert saved_events[: len(live_events)] == live_events
 
         # Viewer: export pane — every supported format renders the turn.
         resp = client.get(f"/api/sessions/{saved_name}/export", params={"format": "md"})

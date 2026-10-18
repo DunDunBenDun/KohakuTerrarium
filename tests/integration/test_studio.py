@@ -41,6 +41,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from kohakuvault import KVault
 
 from kohakuterrarium.errors import (
     InvalidRequestError,
@@ -614,6 +615,34 @@ class TestStudioIntegration:
                 event_types = {e["type"] for e in events["events"]}
                 assert "user_input" in event_types
                 assert "text_chunk" in event_types
+                event_reads = []
+                original_read = KVault.__getitem__
+
+                def read_event_value(table, key):
+                    if table is store.events:
+                        event_reads.append(key)
+                    return original_read(table, key)
+
+                with monkeypatch.context() as counters:
+                    counters.setattr(KVault, "__getitem__", read_event_value)
+                    cursor = None
+                    for index in range(2):
+                        event_reads.clear()
+                        page = studio.persistence.viewer.events(
+                            store,
+                            saved_stem,
+                            agent="scout",
+                            turn_index=None,
+                            types=None,
+                            from_ts=None,
+                            to_ts=None,
+                            limit=1,
+                            cursor=cursor,
+                        )
+                        assert page["events"] == events["events"][index : index + 1]
+                        cursor = events["events"][index]["event_id"]
+                        assert page["next_cursor"] == cursor
+                        assert len(event_reads) == index + 1
                 # Filtering events by type narrows the result set to
                 # exactly the requested kind.
                 only_inputs = studio.persistence.viewer.events(
