@@ -387,27 +387,21 @@ def select_live_event_ids(
     events: Iterable[dict[str, Any]],
     *,
     branch_view: dict[int, int] | None = None,
+    parent_paths: dict[int, tuple[tuple[int, int], ...]] | None = None,
 ) -> set[int]:
     """Return the event_ids that belong to the live subtree.
 
     Live events belong to the selected branch and compatible prior ancestry.
     Legacy or non-state events without branch metadata remain live. Without an
     override, the latest compatible branch is selected at every turn.
+    Supplied parent paths must describe the same unchanged events in the same order.
     """
     events_list = list(events)
-    parent_paths = index_parent_paths(events_list)
+    if parent_paths is None:
+        parent_paths = index_parent_paths(events_list)
     selected = resolve_selected_branches(events_list, parent_paths, branch_view)
 
-    # ``selected`` only contains turns present in ``branches_by_turn`` (see
-    # ``resolve_selected_branches``), so only its prefix up to the maximal
-    # constrained turn in each parent path matters. Building that prefix per
-    # event costs O(longest path) instead of rebuilding the full
-    # ``{t: b for t < ti}`` dict per event.
-    # ``selected`` only contains turns present in ``branches_by_turn`` (see
-    # ``resolve_selected_branches``), so only its prefix up to the maximal
-    # constrained turn in each parent path matters. ``selected_turns`` is
-    # sorted, and the clamped bound lets bisect slice the needed prefix
-    # directly — the per-event cost is O(path length), not O(#turns).
+    # Parent paths constrain only the selected prefix of earlier turns.
     selected_turns = sorted(selected.keys())
     live: set[int] = set()
     for evt in events_list:
@@ -498,12 +492,15 @@ def _rule_priority(
 
 
 def compact_replacement_rules(
-    events: list[dict[str, Any]], branch_view: dict[int, int] | None = None
+    events: list[dict[str, Any]],
+    branch_view: dict[int, int] | None = None,
+    *,
+    parent_paths: dict[int, tuple[tuple[int, int], ...]] | None = None,
 ) -> list[CompactRule]:
-    """Select the authoritative summary range on the requested lineage."""
-    selected = resolve_selected_branches(
-        events, index_parent_paths(events), branch_view
-    )
+    """Select summary ranges; supplied paths must match unchanged events and order."""
+    if parent_paths is None:
+        parent_paths = index_parent_paths(events)
+    selected = resolve_selected_branches(events, parent_paths, branch_view)
     selected_pairs = set(selected.items())
     rules = [
         rule for evt in events if (rule := compact_rule_from_event(evt)) is not None
@@ -522,10 +519,13 @@ def compact_replacement_rules(
 
 
 def compact_covered_event_ids(
-    events: list[dict[str, Any]], branch_view: dict[int, int] | None = None
+    events: list[dict[str, Any]],
+    branch_view: dict[int, int] | None = None,
+    *,
+    parent_paths: dict[int, tuple[tuple[int, int], ...]] | None = None,
 ) -> set[int]:
-    """Return source identities replaced by the current branch's summary."""
-    rules = compact_replacement_rules(events, branch_view)
+    """Return covered identities; supplied paths must match unchanged events and order."""
+    rules = compact_replacement_rules(events, branch_view, parent_paths=parent_paths)
     covered = {
         evt["event_id"]
         for evt in events
