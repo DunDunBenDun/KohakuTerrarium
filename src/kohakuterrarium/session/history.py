@@ -1,6 +1,5 @@
 """Normalize, branch-select, and replay persisted session events."""
 
-import bisect
 import json
 from collections.abc import Hashable
 from typing import Any, Iterable
@@ -16,6 +15,7 @@ from kohakuterrarium.session.assistant_history import (
     project_assistant_rounds,
     replay_assistant_event,
 )
+from kohakuterrarium.session.history_selection import SelectionCompatibility
 
 # Parent paths identify the selected branches of earlier turns. Legacy events
 # derive this ancestry from event order when no explicit path was persisted.
@@ -398,17 +398,7 @@ def select_live_event_ids(
     parent_paths = index_parent_paths(events_list)
     selected = resolve_selected_branches(events_list, parent_paths, branch_view)
 
-    # ``selected`` only contains turns present in ``branches_by_turn`` (see
-    # ``resolve_selected_branches``), so only its prefix up to the maximal
-    # constrained turn in each parent path matters. Building that prefix per
-    # event costs O(longest path) instead of rebuilding the full
-    # ``{t: b for t < ti}`` dict per event.
-    # ``selected`` only contains turns present in ``branches_by_turn`` (see
-    # ``resolve_selected_branches``), so only its prefix up to the maximal
-    # constrained turn in each parent path matters. ``selected_turns`` is
-    # sorted, and the clamped bound lets bisect slice the needed prefix
-    # directly — the per-event cost is O(path length), not O(#turns).
-    selected_turns = sorted(selected.keys())
+    compatibility = SelectionCompatibility(selected)
     live: set[int] = set()
     for evt in events_list:
         ti = evt.get("turn_index")
@@ -422,12 +412,8 @@ def select_live_event_ids(
         if selected.get(ti) != bi:
             continue
         path = parent_paths.get(eid, ())
-        if path:
-            bound = min(ti, max(t for t, _ in path) + 1)
-            idx = bisect.bisect_left(selected_turns, bound)
-            prefix = {t: selected[t] for t in selected_turns[:idx]}
-            if not _path_matches(path, prefix):
-                continue
+        if path and not compatibility.matches(path, ti):
+            continue
         live.add(eid)
     return live
 
