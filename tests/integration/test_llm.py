@@ -1158,7 +1158,9 @@ class TestLlmIntegration:
             ),
         )
         assert jpeg_result.success
-        assert jpeg_result.output[1].url == mislabeled.resolve().as_uri()
+        assert jpeg_result.output[1].url == (
+            "data:image/jpeg;base64," + base64.b64encode(expected_jpeg).decode("ascii")
+        )
         mime_wire = messages_to_dicts(
             [
                 UserMessage(
@@ -1621,8 +1623,9 @@ class TestLlmIntegration:
         context = ToolContext(agent_name="vision", session=None, working_dir=tmp_path)
         read_result = await ReadTool().execute({"path": source.name}, context=context)
         assert read_result.success
-        file_reference = read_result.output[1].url
-        assert file_reference == source.resolve().as_uri()
+        read_snapshot = read_result.output[1].url
+        assert read_snapshot == f"data:image/png;base64,{encoded}"
+        file_reference = source.resolve().as_uri()
 
         requests = []
 
@@ -1702,7 +1705,7 @@ class TestLlmIntegration:
             )
             artifact_reference = normalized.output[0].url
             assert artifact_reference.startswith("/api/sessions/media/artifacts/")
-            for reference in (file_reference, artifact_reference):
+            for reference in (read_snapshot, file_reference, artifact_reference):
                 edited = await tool.execute(
                     {"prompt": "add a border", "action": "edit", "image_url": reference}
                 )
@@ -1799,7 +1802,7 @@ class TestLlmIntegration:
                 assert messages_to_dicts(chat_messages) == original_wire
         finally:
             store.close()
-        assert len(requests) == 3
+        assert len(requests) == 4
 
         responses_requests = []
         reasoning_item = {
