@@ -9,15 +9,6 @@ import pytest
 from kohakuterrarium.session import history, history_selection
 
 
-def _select_with_test_index(events, *, branch_view=None, parent_paths=None):
-    """Invoke the public selector with an optional test-only index override."""
-    if parent_paths is None:
-        return history.select_live_event_ids(events, branch_view=branch_view)
-    with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr(history, "index_parent_paths", lambda _events: parent_paths)
-        return history.select_live_event_ids(events, branch_view=branch_view)
-
-
 def _baseline(events, *, branch_view=None, parent_paths=None):
     events = list(events)
     if parent_paths is None:
@@ -92,7 +83,7 @@ def test_repeated_path_full_check_budget(monkeypatch, size, compatible):
 
     monkeypatch.setattr(history, "_path_matches", counted)
     monkeypatch.setattr(history_selection, "_matches_before_turn", counted_direct)
-    assert _select_with_test_index(events, parent_paths=paths) == expected
+    assert history.select_live_event_ids(events, parent_paths=paths) == expected
     assert checks <= 2, (size, checks)
 
 
@@ -137,7 +128,7 @@ def test_supplied_noncanonical_paths_preserve_results_and_errors(path):
     paths = {1: (), 2: (), 3: path}
     before = copy.deepcopy((events, paths))
     expected = _outcome(lambda: _baseline(events, parent_paths=paths))
-    actual = _outcome(lambda: _select_with_test_index(events, parent_paths=paths))
+    actual = _outcome(lambda: history.select_live_event_ids(events, parent_paths=paths))
     assert actual == expected
     assert (events, paths) == before
 
@@ -155,7 +146,9 @@ def test_turn_key_and_call_local_selected_views():
         assert _baseline(events, branch_view=view, parent_paths=paths) == expected
         for _ in range(2):
             assert (
-                _select_with_test_index(events, branch_view=view, parent_paths=paths)
+                history.select_live_event_ids(
+                    events, branch_view=view, parent_paths=paths
+                )
                 == expected
             )
 
@@ -172,15 +165,11 @@ def test_projection_derives_legacy_ancestry_independently():
     projected_paths = history.index_parent_paths(projected)
     assert full_paths[3] == ((1, 2),)
     assert projected_paths[3] == ((1, 1),)
-    assert _select_with_test_index(events, branch_view={1: 1}) == {2}
-    assert _select_with_test_index(projected, branch_view={1: 1}) == {2, 3, 4}
-    assert _select_with_test_index(
+    assert history.select_live_event_ids(events, branch_view={1: 1}) == {2}
+    assert history.select_live_event_ids(projected, branch_view={1: 1}) == {2, 3, 4}
+    assert history.select_live_event_ids(
         projected, branch_view={1: 1}, parent_paths=projected_paths
-    ) == {
-        2,
-        3,
-        4,
-    }
+    ) == {2, 3, 4}
 
 
 def test_bool_int_aliases_duplicate_ids_and_nonstate_events():
@@ -197,9 +186,9 @@ def test_bool_int_aliases_duplicate_ids_and_nonstate_events():
     for view in [None, {True: True}, {2: True}, {2: 2}, {"2": 1}]:
         paths = history.index_parent_paths(events)
         expected = _baseline(events, branch_view=view, parent_paths=paths)
-        assert _select_with_test_index(iter(events), branch_view=view) == expected
+        assert history.select_live_event_ids(iter(events), branch_view=view) == expected
         assert (
-            _select_with_test_index(events, branch_view=view, parent_paths=paths)
+            history.select_live_event_ids(events, branch_view=view, parent_paths=paths)
             == expected
         )
 
@@ -227,7 +216,7 @@ def test_differential_legacy_explicit_views_and_projections(seed):
             )
             for supplied in [None, paths]:
                 actual = _outcome(
-                    lambda: _select_with_test_index(
+                    lambda: history.select_live_event_ids(
                         iter(projection), branch_view=view, parent_paths=supplied
                     )
                 )
@@ -318,7 +307,7 @@ def test_noncanonical_selected_preserves_prefix_and_eager_sort(case):
     before = copy.deepcopy((events, paths))
     assert _outcome(lambda: _baseline(events, parent_paths=paths)) == expected
     assert (
-        _outcome(lambda: _select_with_test_index(events, parent_paths=paths))
+        _outcome(lambda: history.select_live_event_ids(events, parent_paths=paths))
         == expected
     )
     assert (events, paths) == before
@@ -329,5 +318,6 @@ def test_branch_view_error_parity(view):
     events = [_event(1, 1, 1), _event(2, 2, 1)]
     expected = _outcome(lambda: _baseline(events, branch_view=view))
     assert (
-        _outcome(lambda: _select_with_test_index(events, branch_view=view)) == expected
+        _outcome(lambda: history.select_live_event_ids(events, branch_view=view))
+        == expected
     )

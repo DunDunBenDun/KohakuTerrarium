@@ -33,9 +33,7 @@ class ReadTool(BaseTool):
     """Read files with line ranges and multimodal handling where supported."""
 
     needs_context = True
-    # A read image is context the creature looked at, not a product: it is
-    # referenced in place, never copied, and folds away with the tool block.
-    media_policy = MediaPolicy(persist=False, pinned=False)
+    media_policy = MediaPolicy(persist=True, pinned=False, inline_fallback=True)
 
     @property
     def tool_name(self) -> str:
@@ -355,15 +353,13 @@ class ReadTool(BaseTool):
             mime=mime,
         )
 
-        # The file itself is the source of truth: providers inline it at send
-        # time and the web UI loads it through the raw file route.
         return ToolResult(
             output=[
                 TextPart(
                     text=f"Image: {original_path} ({len(data) // 1024}KB, {mime})"
                 ),
                 ImagePart(
-                    url=file_path.resolve().as_uri(),
+                    url=f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}",
                     detail="auto",
                     source_type="file",
                     source_name=file_path.name,

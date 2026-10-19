@@ -112,6 +112,19 @@ python scripts/inspect_session.py /path/to/saved.kohakutr --all --search "query"
 读取内容。打开没有持久化事件计数器的旧会话时，Store 构造阶段仍可能扫描事件值。
 仅按 key 统计摘要的优化并未消除这项独立的遗留启动成本。
 
+### 已保存 Conversation 的统计按需加载
+
+打开或刷新已保存会话查看器的 **Conversation** 标签时，会加载历史索引、树和历史页，
+不主动计算统计摘要。索引中的 `viewer_agents` 按**同一个 Store** 未筛选摘要的默认顺序
+列出主代理和 attached 代理，不代表集群合并摘要的完整目录。历史索引仍只对应一个 Store；
+`targets` 保持原有合法 Conversation 目标（含频道），发现 attached
+命名空间不会自动把它变成新的 Conversation 目标。
+
+切换到 Trace、Overview 或 Cost 时，才按需请求当前摘要；同一数据刷新代次复用已成功
+或正在进行的摘要请求。除非用户明确选择代理，Trace 仍等待未筛选摘要确定默认选择。
+Live Inspector 即使停留在 Conversation，也保持摘要和 header 总量刷新。仅枚举 key
+的代理发现不会消除旧会话缺失持久化计数器时的 Store 初始化扫描。
+
 ## 持久化哪些东西
 
 每个轮次 KohakuTerrarium 都会记录：

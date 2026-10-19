@@ -36,6 +36,8 @@ from kohakuterrarium.core.branch_continuation import selected_branch_view
 from kohakuterrarium.core.events import create_user_input_event
 from kohakuterrarium.modules.tool.base import BaseTool, ExecutionMode, ToolResult
 from kohakuterrarium.modules.trigger.timer import TimerTrigger
+from kohakuterrarium.session import history as _history_mod
+from kohakuterrarium.session import resume as _resume_mod
 from kohakuterrarium.session import resume_branch as _resume_branch_mod
 from kohakuterrarium.session.attachment_service import get_attach_state
 from kohakuterrarium.session.embedding import BaseEmbedder
@@ -864,10 +866,31 @@ class TestSessionIntegration:
             replay_counts.append(len(events))
             return replay(events, **kwargs)
 
+        preparing = False
+        preparation_indexes = []
+        prepare = _resume_mod.prepare_saved_snapshot
+        index = _history_mod.index_parent_paths
+
+        def observe_index(events):
+            if preparing:
+                preparation_indexes.append([event.get("event_id") for event in events])
+            return index(events)
+
+        def observe_prepare(*args, **kwargs):
+            nonlocal preparing
+            preparing = True
+            try:
+                return prepare(*args, **kwargs)
+            finally:
+                preparing = False
+
         with monkeypatch.context() as tracing:
             tracing.setattr(
                 _resume_branch_mod, "replay_with_settled_tools", observe_replay
             )
+            tracing.setattr(_resume_mod, "prepare_saved_snapshot", observe_prepare)
+            tracing.setattr(_resume_branch_mod, "index_parent_paths", observe_index)
+            tracing.setattr(_history_mod, "index_parent_paths", observe_index)
             fallback_agent, fallback_store = await resume_agent_async(session_path)
         try:
             wire = fallback_agent.controller.conversation.to_messages()
@@ -886,10 +909,55 @@ class TestSessionIntegration:
                 t["trigger_id"] for t in fallback_agent._pending_resume_triggers
             ] == [t2_id]
             assert fallback_agent._pending_resume_events == expected_pending
-            assert replay_counts == [len(fallback_store.get_events("scribe"))]
+            raw = fallback_store.get_events("scribe")
+            assert replay_counts == [len(raw)]
+            assert preparation_indexes == [[event["event_id"] for event in raw]]
+            await fallback_agent.start()
+            continuation_llm = ScriptedLLM(["continued after recovery"])
+            fallback_agent.llm = fallback_agent.controller.llm = continuation_llm
+            result = await fallback_agent.run("continue recovered history")
+            assert result.text == "continued after recovery"
+            assert (fallback_agent._turn_index, fallback_agent._branch_id) == (4, 1)
+            assert fallback_agent._parent_branch_path == [(1, 1), (2, 1), (3, 1)]
+            continued_messages = [
+                dict(message.to_dict(), metadata=message.metadata)
+                for message in fallback_agent.controller.conversation.get_messages()
+            ]
         finally:
+            await fallback_agent.stop()
             await fallback_agent._session_output.drain()
             await asyncio.to_thread(fallback_store.close, update_status=False)
+
+        continued_agent, continued_store = await resume_agent_async(session_path)
+        try:
+            assert [
+                dict(message.to_dict(), metadata=message.metadata)
+                for message in continued_agent.controller.conversation.get_messages()
+            ] == continued_messages
+            assert (continued_agent._turn_index, continued_agent._branch_id) == (4, 1)
+            assert continued_agent._parent_branch_path == [(1, 1), (2, 1), (3, 1)]
+            assert continued_agent._context_cutoff_event_id == 0
+            assert continued_agent.session.scratchpad.get("project") == "terrarium"
+            assert (
+                continued_agent._pending_resume_events
+                == continued_store.get_resumable_events("scribe")
+            )
+            assert [
+                t["trigger_id"] for t in continued_agent._pending_resume_triggers
+            ] == [t2_id]
+            persisted_users = [
+                event
+                for event in continued_store.get_events("scribe")
+                if event["type"] == "user_message"
+            ]
+            assert persisted_users[-1]["content"] == "continue recovered history"
+            assert (
+                persisted_users[-1]["turn_index"],
+                persisted_users[-1]["branch_id"],
+            ) == (4, 1)
+        finally:
+            await continued_agent._session_output.drain()
+            await asyncio.to_thread(continued_store.close, update_status=False)
 
         # An unknown io_mode is rejected loudly before any agent is built.
         with pytest.raises(ValueError, match="Unknown IO mode"):

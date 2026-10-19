@@ -47,27 +47,31 @@ class TestReadPathGuard:
 
 
 class TestReadImage:
-    async def test_image_is_referenced_in_place_not_inlined(self, tmp_path):
-        from PIL import Image
-
+    @pytest.mark.parametrize("mutation", ["delete", "overwrite"])
+    async def test_image_snapshot_survives_source_changes(self, tmp_path, mutation):
         path = tmp_path / "shot.png"
         Image.new("RGB", (2, 2), "red").save(path)
+        original = path.read_bytes()
 
         result = await ReadTool().execute({"path": str(path)}, context=_ctx(tmp_path))
+        if mutation == "delete":
+            path.unlink()
+        else:
+            Image.new("RGB", (2, 2), "blue").save(path)
 
         assert result.success is True
         image = next(p for p in result.output if p.type == "image_url")
-        assert image.url == path.resolve().as_uri()
+        assert (
+            image.url == "data:image/png;base64," + base64.b64encode(original).decode()
+        )
         assert image.source_type == "file"
         assert image.source_name == "shot.png"
-        assert "base64" not in image.url
 
-    def test_read_media_is_a_reference_that_folds_away(self):
-        # Reading is looking, not producing: nothing is copied into the
-        # session and the preview collapses with the tool block.
+    def test_read_snapshot_is_persisted_and_folds_away(self):
         policy = ReadTool().media_policy
-        assert policy.persist is False
+        assert policy.persist is True
         assert policy.pinned is False
+        assert policy.inline_fallback is True
 
 
 def _pdf(path, color=(0, 0, 0)):

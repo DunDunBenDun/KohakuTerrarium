@@ -27,8 +27,9 @@ def prepare_saved_snapshot(store, namespace: str, events: list[dict]) -> dict | 
     records = load_records(store, namespace)
     if not records:
         return None
+    parent_paths = index_parent_paths(events)
     selected = resolve_selected_branches(
-        events, index_parent_paths(events), load_persisted_branch_view(store, namespace)
+        events, parent_paths, load_persisted_branch_view(store, namespace)
     )
     return prepare_snapshot(
         store,
@@ -36,6 +37,7 @@ def prepare_saved_snapshot(store, namespace: str, events: list[dict]) -> dict | 
         events,
         selected,
         records=records,
+        parent_paths=parent_paths,
         replay=replay_with_settled_tools,
         needs_replay=snapshot_needs_settled_tool_replay,
     )
