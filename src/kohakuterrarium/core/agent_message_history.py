@@ -234,11 +234,11 @@ def include_settled_tool_results(
         if not isinstance(event.get("event_id"), int)
         or event["event_id"] in live_event_ids
     ]
-    live_calls: set[str] = {
-        identity
-        for event in live_events
-        if event.get("type") == "tool_call" and (identity := _tool_identity(event))
-    }
+    live_call_turns: dict[str, Any] = {}
+    for event in live_events:
+        if event.get("type") == "tool_call" and (identity := _tool_identity(event)):
+            if identity not in live_call_turns:
+                live_call_turns[identity] = event.get("turn_index")
     live_result_ids: set[str] = {
         identity
         for event in live_events
@@ -254,7 +254,7 @@ def include_settled_tool_results(
             continue
         if (
             identity
-            and identity in live_calls
+            and identity in live_call_turns
             and identity not in live_result_ids
             and identity not in late_results
         ):
@@ -264,20 +264,13 @@ def include_settled_tool_results(
             late_results[identity] = projected
         elif (
             identity
-            and identity in live_calls
+            and identity in live_call_turns
             and isinstance(eid, int)
             and eid in live_event_ids
             and identity not in late_results
         ):
             # Live results recorded in later turns are paired at their call.
-            call_turn = next(
-                (
-                    ev.get("turn_index")
-                    for ev in live_events
-                    if ev.get("type") == "tool_call" and _tool_identity(ev) == identity
-                ),
-                None,
-            )
+            call_turn = live_call_turns[identity]
             result_turn = event.get("turn_index")
             if (
                 isinstance(call_turn, int)

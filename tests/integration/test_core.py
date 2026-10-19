@@ -2884,7 +2884,59 @@ class TestCoreIntegration:
                         assert [(m.name, m.content) for m in restored_bg] == [
                             ("slowbg", "background-finished")
                         ]
+                        assert [
+                            (m.tool_call_id, m.name, m.content)
+                            for m in agent.controller.conversation.get_messages()
+                            if m.role == "tool"
+                        ] == [
+                            ("c1", "echo", "echoed:a"),
+                            ("c2", "echo", "echoed:b"),
+                            ("b1", "slowbg", "background-finished"),
+                        ]
+                        assert restored_bg[0].metadata == {
+                            "job_id": job_id,
+                            "tool_result_phase": "final",
+                            "result_event_id": next(
+                                e["event_id"]
+                                for e in cold_store.get_events("settled")
+                                if e["type"] == "tool_result"
+                                and e.get("call_id") == job_id
+                            ),
+                        }
+                        assert (agent._turn_index, agent._branch_id) == (4, 1)
+                        assert agent._parent_branch_path == [(1, 1), (2, 1), (3, 1)]
+                        assert agent._context_cutoff_event_id == 0
+                        pending = cold_store.get_resumable_events("settled")
+                        assert agent._pending_resume_events == pending
+                        repaired_messages = copy.deepcopy(
+                            [
+                                dict(m.to_dict(), metadata=m.metadata)
+                                for m in agent.controller.conversation.get_messages()
+                            ]
+                        )
+                        cold_store.close(update_status=False)
+                        agent, cold_store = resume_agent(path, io_mode="plain", llm=llm)
+                        assert [
+                            dict(m.to_dict(), metadata=m.metadata)
+                            for m in agent.controller.conversation.get_messages()
+                        ] == repaired_messages
+                        assert agent._pending_resume_events == pending
+                        assert agent._context_cutoff_event_id == 0
+                        assert (agent._turn_index, agent._branch_id) == (4, 1)
+                        assert agent._parent_branch_path == [(1, 1), (2, 1), (3, 1)]
                         await agent.start()
+                    raw_settled = agent.session_store.get_events("settled")
+                    call_event = next(
+                        e
+                        for e in raw_settled
+                        if e["type"] == "tool_call" and e.get("call_id") == job_id
+                    )
+                    result_event = next(
+                        e
+                        for e in raw_settled
+                        if e["type"] == "tool_result" and e.get("call_id") == job_id
+                    )
+                    assert result_event["turn_index"] > call_event["turn_index"]
                     original = dict(live_branch_path(agent))
                     await agent.regenerate_last_response(turn_index=agent._turn_index)
                     sibling = dict(live_branch_path(agent))
@@ -2957,6 +3009,13 @@ class TestCoreIntegration:
                         ("assistant", "sib cont"),
                     ]
                     saved_view = selected_branch_view(agent)
+                    full_selected = copy.deepcopy(
+                        [
+                            dict(m.to_dict(), metadata=m.metadata)
+                            for m in agent.controller.conversation.get_messages()
+                        ]
+                    )
+                    saved_cutoff = agent._context_cutoff_event_id
                     path = agent.session_store.path
                 finally:
                     bg.release.set()
@@ -2975,11 +3034,32 @@ class TestCoreIntegration:
                         prefix(restored.controller.conversation.to_messages())
                         == selected
                     )
+                    assert [
+                        dict(m.to_dict(), metadata=m.metadata)
+                        for m in restored.controller.conversation.get_messages()
+                    ] == full_selected
+                    assert restored._context_cutoff_event_id == saved_cutoff
+                    assert (
+                        restored._pending_resume_events
+                        == store.get_resumable_events("settled")
+                    )
                     await restored.start()
                     await restored.inject_input(prompt)
                     selected += [("user", prompt)]
                     assert prefix(llm.last_messages) == selected
                     selected += [("assistant", response)]
+                    assert (
+                        prefix(restored.controller.conversation.to_messages())
+                        == selected
+                    )
+                    await restored._session_output.drain()
+                    full_selected = copy.deepcopy(
+                        [
+                            dict(m.to_dict(), metadata=m.metadata)
+                            for m in restored.controller.conversation.get_messages()
+                        ]
+                    )
+                    saved_cutoff = restored._context_cutoff_event_id
                     saved_view = selected_branch_view(restored)
                     path = store.path
                 finally:
