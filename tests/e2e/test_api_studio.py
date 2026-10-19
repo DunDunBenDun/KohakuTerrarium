@@ -771,6 +771,11 @@ class TestApiStudioJourney:
         assert resumed_rows[0]["runtime_id"] == resumed_id
         assert resumed_rows[0]["is_live"] is True
 
+        live_index = client.get(f"/api/sessions/{resumed_id}/history")
+        assert live_index.status_code == 200
+        assert live_index.json()["viewer_agents"] == ["scout"]
+        assert live_index.json()["targets"] == ["scout"]
+
         # Explicit End removes the live runtime and Rail row while preserving
         # the saved History entry.
         resp = client.post(f"/api/sessions/open/{conversation_id}/end")
@@ -793,6 +798,10 @@ class TestApiStudioJourney:
         assert resp.status_code == 200
         assert "scout" in resp.json()["targets"]
         assert resp.json()["meta"]["agents"] == ["scout"]
+        assert resp.json()["viewer_agents"] == ["scout"]
+        summary = client.get(f"/api/sessions/{saved_name}/summary")
+        assert summary.status_code == 200
+        assert summary.json()["agents"] == resp.json()["viewer_agents"]
         resp = client.get(f"/api/sessions/{saved_name}/history/scout")
         assert resp.status_code == 200
         assert resp.json()["history_page"]["stream"] == "events"

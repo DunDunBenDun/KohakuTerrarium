@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { useSessionDetailStore } from "./sessionDetail.js"
 import { sessionAPI } from "@/utils/api"
+import { acquireScope, releaseScope } from "@/composables/useScope"
 
 vi.mock("@/utils/api", () => ({
   sessionAPI: {
@@ -127,6 +128,132 @@ describe("sessionDetail current discovery identity", () => {
     })
     await detail.load("A")
     expect(detail.traceDiscovery).toEqual({ status: "ready", agent: "alice" })
+  })
+})
+
+describe("saved Conversation summary scheduling", () => {
+  it("restores aggregate totals after joining discovery superseded by a filtered display", async () => {
+    const detail = useSessionDetailStore("aggregate")
+    const aggregate = deferred()
+    sessionAPI.getSummary.mockReturnValueOnce(aggregate.promise)
+    const load = detail.load("A")
+    sessionAPI.getSummary.mockResolvedValueOnce({ agents: ["alice"], totals: { tokens: 1 } })
+    await detail.loadSummary("alice")
+    const activation = detail.setTab("cost")
+    aggregate.resolve({ agents: ["alice", "bob"], totals: { tokens: 20 } })
+    await Promise.all([load, activation])
+    expect(detail.summary.totals.tokens).toBe(20)
+    expect(detail.loadingSummary).toBe(false)
+    const lateFiltered = deferred()
+    sessionAPI.getSummary.mockReturnValueOnce(lateFiltered.promise)
+    const filtered = detail.loadSummary("alice")
+    await detail.ensureSummary()
+    lateFiltered.resolve({ agents: ["alice"], totals: { tokens: 2 } })
+    await filtered
+    expect(detail.summary.totals.tokens).toBe(20)
+    expect(detail.loadingSummary).toBe(false)
+  })
+
+  it("invalidates pending discovery across reset and scope release", async () => {
+    acquireScope("reset")
+    const detail = useSessionDetailStore("reset")
+    const old = deferred()
+    sessionAPI.getSummary.mockReturnValueOnce(old.promise)
+    const first = detail.load("A")
+    detail.$reset()
+    const fresh = deferred()
+    sessionAPI.getSummary.mockReturnValueOnce(fresh.promise)
+    const second = detail.load("A")
+    expect(sessionAPI.getSummary).toHaveBeenCalledTimes(2)
+    old.resolve({ agents: ["old"] })
+    await first
+    expect(detail.summaryStatus).toBe("pending")
+    expect(detail.summary).toBeNull()
+    releaseScope("reset")
+    fresh.resolve({ agents: ["disposed"] })
+    await second
+    expect(detail.summary).toBeNull()
+  })
+
+  it("discovers ordered viewer agents without changing history targets or inventing summary success", async () => {
+    const detail = useSessionDetailStore("saved")
+    sessionAPI.getHistoryIndex.mockResolvedValue({
+      meta: { agents: ["alice", "bob"] },
+      targets: ["alice", "bob", "ch:team"],
+      viewer_agents: ["alice:attached:review:0", "bob", "alice"],
+    })
+    await detail.load("A", { tab: "conv" })
+    expect(sessionAPI.getSummary).not.toHaveBeenCalled()
+    expect(detail.summaryStatus).toBe("idle")
+    expect(detail.summary).toBeNull()
+    expect(detail.traceDiscovery.status).toBe("pending")
+    expect(detail.agents).toEqual(["alice:attached:review:0", "bob", "alice"])
+    expect(detail.targets).toEqual(["alice", "bob", "ch:team"])
+    const epoch = detail.loadEpoch
+    const pending = deferred()
+    sessionAPI.getSummary.mockReturnValueOnce(pending.promise)
+    detail.setTab("trace")
+    detail.setTab("cost")
+    detail.setTab("overview")
+    expect(sessionAPI.getSummary).toHaveBeenCalledTimes(1)
+    expect(detail.loadEpoch).toBe(epoch)
+    expect(detail.traceDiscovery.status).toBe("pending")
+    pending.resolve({ agents: ["bob", "alice"], totals: { tokens: 123 } })
+    await detail.ensureSummary()
+    detail.setTab("conv")
+    detail.setTab("cost")
+    expect(sessionAPI.getSummary).toHaveBeenCalledTimes(1)
+    expect(detail.summary.totals.tokens).toBe(123)
+    expect(detail.traceDiscovery.agent).toBe("bob")
+    detail.setTab("conv")
+    await detail.load("A")
+    expect(sessionAPI.getSummary).toHaveBeenCalledTimes(1)
+    expect(detail.summaryStatus).toBe("idle")
+    detail.setTab("trace")
+    await detail.ensureSummary()
+    expect(sessionAPI.getSummary).toHaveBeenCalledTimes(2)
+  })
+
+  it("retries failed summaries and preserves live Conversation refresh totals", async () => {
+    const detail = useSessionDetailStore("retry")
+    await detail.load("A", { tab: "conv" })
+    sessionAPI.getSummary.mockRejectedValueOnce(new Error("try again"))
+    detail.setTab("trace")
+    await detail.ensureSummary()
+    expect(detail.summaryStatus).toBe("error")
+    detail.setTab("conv")
+    sessionAPI.getSummary.mockResolvedValue({ agents: ["alice"], totals: { tokens: 42 } })
+    detail.setTab("cost")
+    await detail.ensureSummary()
+    expect(sessionAPI.getSummary).toHaveBeenCalledTimes(2)
+    expect(detail.summary.totals.tokens).toBe(42)
+    detail.setTab("conv")
+    detail.live = true
+    await detail.load("A")
+    expect(sessionAPI.getSummary).toHaveBeenCalledTimes(3)
+    sessionAPI.getSummary.mockResolvedValue({ agents: ["alice"], totals: { tokens: 84 } })
+    await detail.load("A")
+    expect(detail.summary.totals.tokens).toBe(84)
+    expect(sessionAPI.getSummary).toHaveBeenCalledTimes(4)
+  })
+
+  it("ignores a pending summary from a previous binding and shares nothing across scopes", async () => {
+    const detail = useSessionDetailStore("one")
+    const old = deferred()
+    sessionAPI.getSummary.mockReturnValueOnce(old.promise)
+    const load = detail.load("A")
+    await detail.load("B", { tab: "conv" })
+    await detail.load("A", { tab: "conv" })
+    old.resolve({ agents: ["obsolete"], totals: { tokens: 99 } })
+    await load
+    expect(detail.summaryStatus).toBe("idle")
+    expect(detail.loadingSummary).toBe(false)
+    expect(detail.summary).toBeNull()
+    const other = useSessionDetailStore("two")
+    sessionAPI.getSummary.mockResolvedValue({ agents: ["separate"] })
+    await other.load("A")
+    expect(other.summary.agents).toEqual(["separate"])
+    expect(detail.summary).toBeNull()
   })
 })
 

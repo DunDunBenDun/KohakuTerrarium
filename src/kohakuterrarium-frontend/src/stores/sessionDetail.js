@@ -20,6 +20,9 @@ import { injectScope, registerScopeDisposer } from "@/composables/useScope"
 import { sessionAPI } from "@/utils/api"
 
 const VALID_TABS = new Set(["overview", "trace", "conv", "cost", "find", "diff", "drives"])
+const summaryRequests = new WeakMap()
+let nextRequestId = 0
+const validTab = (tab) => (VALID_TABS.has(tab) ? tab : "overview")
 
 function agentNames(names) {
   return [
@@ -31,7 +34,8 @@ function requestIdentity(store, counter) {
   const name = store.name
   const binding = store.bindingGeneration
   const epoch = store.loadEpoch
-  const request = ++store[counter]
+  const request = ++nextRequestId
+  store[counter] = request
   return () =>
     store.name === name &&
     store.bindingGeneration === binding &&
@@ -45,6 +49,8 @@ const _sessionDetailOptions = {
     activeTab: "overview",
     meta: null,
     targets: [],
+    viewerAgents: [],
+    unfilteredSummary: null,
     tree: null,
     summary: null,
     bindingGeneration: 0,
@@ -89,6 +95,8 @@ const _sessionDetailOptions = {
           names.push(n)
         }
       }
+      for (const n of state.summaryAgents) add(n)
+      for (const n of state.viewerAgents) add(n)
       for (const n of (state.summary && state.summary.agents) || []) add(n)
       for (const n of state.targets || []) add(n)
       for (const n of (state.meta && state.meta.agents) || []) add(n)
@@ -110,6 +118,7 @@ const _sessionDetailOptions = {
       const error = state.summaryError || state.error
       return { status: error ? "error" : "empty", agent: "", error }
     },
+    needsSummary: (state) => state.live || state.activeTab !== "conv",
     primaryAgent() {
       return this.agents[0] || null
     },
@@ -119,7 +128,28 @@ const _sessionDetailOptions = {
 
   actions: {
     setTab(tab) {
-      this.activeTab = VALID_TABS.has(tab) ? tab : "overview"
+      this.activeTab = validTab(tab)
+      if (this.name && this.needsSummary) return this.ensureSummary()
+    },
+
+    ensureSummary() {
+      if (!this.name) return Promise.resolve()
+      if (this.summaryStatus === "success") {
+        requestIdentity(this, "summaryRequest")
+        this.summary = this.unfilteredSummary
+        this.loadingSummary = false
+        return Promise.resolve()
+      }
+      const pending = summaryRequests.get(this)
+      if (pending?.epoch === this.loadEpoch && pending.name === this.name) {
+        const current = requestIdentity(this, "summaryRequest")
+        return pending.promise.then(() => {
+          if (!current()) return
+          this.summary = this.summaryStatus === "success" ? this.unfilteredSummary : null
+          this.loadingSummary = false
+        })
+      }
+      return this.loadSummary()
     },
 
     /**
@@ -134,24 +164,32 @@ const _sessionDetailOptions = {
       if (this.name) this.load(this.name)
     },
 
-    async load(name) {
+    async load(name, { tab = this.activeTab } = {}) {
       if (!name) return
+      this.activeTab = validTab(tab)
+      summaryRequests.delete(this)
       const isSwitch = name !== this.name
       this.name = name
       this.loadEpoch++
       this.metaStatus = "idle"
       this.summaryStatus = "idle"
+      this.unfilteredSummary = null
+      this.loadingSummary = false
       this.summaryAgents = []
       this.summaryError = ""
       if (isSwitch) {
         this.bindingGeneration++
         this.meta = null
         this.targets = []
+        this.viewerAgents = []
         this.tree = null
         this.summary = null
         this.error = ""
       }
-      await Promise.all([this.loadMeta(), this.loadTree(), this.loadSummary()])
+      const requests = [this.loadMeta(), this.loadTree()]
+      if (this.needsSummary) requests.push(this.ensureSummary())
+      else this.summary = null
+      await Promise.all(requests)
     },
 
     async loadMeta() {
@@ -166,6 +204,7 @@ const _sessionDetailOptions = {
         if (!current()) return
         this.meta = data.meta || null
         this.targets = data.targets || []
+        this.viewerAgents = agentNames(data.viewer_agents || [])
         this.metaStatus = "success"
       } catch (err) {
         if (!current()) return
@@ -175,6 +214,7 @@ const _sessionDetailOptions = {
         if (err?.response?.status === 404) {
           this.meta = null
           this.targets = []
+          this.viewerAgents = []
         } else {
           this.error = `Failed to load session metadata: ${err.message || err}`
         }
@@ -200,7 +240,20 @@ const _sessionDetailOptions = {
       }
     },
 
-    async loadSummary(agent = null) {
+    loadSummary(agent = null) {
+      if (!this.name) return Promise.resolve()
+      const promise = this.fetchSummary(agent)
+      if (agent == null) {
+        const request = { name: this.name, epoch: this.loadEpoch, promise }
+        summaryRequests.set(this, request)
+        promise.finally(() => {
+          if (summaryRequests.get(this) === request) summaryRequests.delete(this)
+        })
+      }
+      return promise
+    },
+
+    async fetchSummary(agent) {
       if (!this.name) return
       const name = this.name
       const current = requestIdentity(this, "summaryRequest")
@@ -216,6 +269,7 @@ const _sessionDetailOptions = {
         const data = await sessionAPI.getSummary(name, agent)
         if (current()) this.summary = data
         if (discoveryCurrent()) {
+          this.unfilteredSummary = data
           this.summaryAgents = agentNames(data?.agents || [])
           this.summaryStatus = "success"
         }
@@ -249,7 +303,10 @@ function _factoryFor(scope) {
     if (scope) {
       registerScopeDisposer(scope, () => {
         try {
-          useFn().$dispose?.()
+          const store = useFn()
+          store.loadEpoch++
+          summaryRequests.delete(store)
+          store.$dispose?.()
         } catch {
           /* swallow */
         }

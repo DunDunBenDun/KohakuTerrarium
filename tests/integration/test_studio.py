@@ -762,6 +762,7 @@ class TestStudioIntegration:
             index = studio.persistence.history_index(saved_path)
             assert index["session_name"] == saved_stem
             assert "scout" in index["targets"]
+            assert index["viewer_agents"] == ["scout"]
             scout_history = studio.persistence.history(saved_path, "scout")
             assert scout_history["session_name"] == saved_stem
             assert scout_history["meta"]["agents"] == ["scout"]
@@ -788,6 +789,30 @@ class TestStudioIntegration:
             assert (
                 diff_scoped["a"]["total_messages"] >= diff_scoped["b"]["total_messages"]
             )
+
+            fork_history_before = studio.persistence.history(fork_path, "scout")
+            attached = "scout:attached:review:0"
+            discovery_store = SessionStore(fork_path)
+            try:
+                discovery_store.append_event(
+                    attached, "user_input", {"content": "review the fork"}
+                )
+                discovery_store.set_viewer_default_agent(attached)
+                viewer_summary = studio.persistence.viewer.summary(
+                    discovery_store, fork_path.stem
+                )
+            finally:
+                discovery_store.close(update_status=False)
+            fork_index = studio.persistence.history_index(fork_path)
+            assert fork_index["viewer_agents"] == [attached, "scout"]
+            assert fork_index["targets"] == ["scout"]
+            assert fork_index["meta"]["agents"] == ["scout"]
+            assert viewer_summary["agents"] == fork_index["viewer_agents"]
+            with pytest.raises(NotFoundError):
+                studio.persistence.history(fork_path, attached)
+            fork_history_after = studio.persistence.history(fork_path, "scout")
+            assert fork_history_after["messages"] == fork_history_before["messages"]
+            assert fork_history_after["events"] == fork_history_before["events"]
 
             # --- persistence.list sees both sessions now ----------------
             fork_stem = fork_path.name.split(".kohakutr")[0]
