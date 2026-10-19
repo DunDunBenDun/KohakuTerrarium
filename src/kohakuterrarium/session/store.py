@@ -3,7 +3,7 @@
 import json
 import platform
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -35,6 +35,7 @@ from kohakuterrarium.session.store_discovery import (
     discover_agents,
     discover_attached_agents,
 )
+from kohakuterrarium.session.store_events import _iter_event_values
 from kohakuterrarium.session.store_fork import perform_fork
 from kohakuterrarium.session.store_resources import StoreResourceMixin
 from kohakuterrarium.session.token_views import (
@@ -348,21 +349,15 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
         ``since_event_id``, only events whose ``event_id`` exceeds it are
         returned (cursor-style incremental reads).
         """
+        return list(self._iter_events(agent, since_event_id))
+
+    def _iter_events(
+        self, agent: str, since_event_id: int | None = None
+    ) -> Iterator[dict]:
+        """Iterate values in physical-key order inside the owning store operation."""
         self._flush_events_cache()
-        prefix = f"{agent}:e"
-        result = []
-        for key_bytes in sorted(iter_kv_keys(self.events, prefix=prefix)):
-            try:
-                evt = self.events[key_bytes]
-            except Exception as e:
-                logger.warning("Failed to read event", error=str(e), exc_info=True)
-                continue
-            if since_event_id is not None:
-                eid = evt.get("event_id") if isinstance(evt, dict) else None
-                if not isinstance(eid, int) or eid <= since_event_id:
-                    continue
-            result.append(evt)
-        return result
+        keys = sorted(iter_kv_keys(self.events, prefix=f"{agent}:e"))
+        return _iter_event_values(self.events, keys, since_event_id)
 
     def max_event_id(self, agent: str) -> int:
         """Return the session-global max ``event_id`` (monotonic, per-session).
