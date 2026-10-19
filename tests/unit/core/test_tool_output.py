@@ -9,6 +9,7 @@ from urllib.parse import unquote
 
 import pytest
 
+from kohakuterrarium.builtins.tools.read import ReadTool
 from kohakuterrarium.core.tool_output import (
     NormalizedToolOutput,
     OutputStats,
@@ -243,6 +244,25 @@ class TestNormalizeMultimodal:
         assert not any(isinstance(p, ImagePart) for p in n.output)
         assert n.metadata.get("data_urls_elided") == 1
 
+    @pytest.mark.parametrize("storage", ["absent", "failing", "available"])
+    def test_read_snapshot_survives_normalization(self, tmp_path, storage):
+        store = None if storage == "absent" else _FakeArtifactStore(tmp_path)
+        if store is not None:
+            store.fail = storage == "failing"
+        url = _png_data_url(b"SNAPSHOT")
+        result = ToolResult(output=[ImagePart(url=url, source_type="file")])
+        normalized, metadata = normalize_tool_result(
+            ReadTool(), result, max_output=100, artifact_store=store
+        )
+        image = normalized.output[0]
+        if storage == "available":
+            assert image.url.startswith("/api/sessions/sess123/artifacts/")
+            assert list(store.written.values()) == [b"SNAPSHOT"]
+        else:
+            assert image.url == url
+            assert "data_urls_elided" not in metadata
+        assert metadata["session_metadata"]["media"]["pinned"] is False
+
     def test_image_part_with_store_persisted(self, tmp_path):
         store = _FakeArtifactStore(tmp_path)
         parts = [ImagePart(url=_png_data_url(b"PNG-RAW-BYTES"))]
@@ -284,7 +304,11 @@ class TestNormalizeMultimodal:
         assert "artifacts" not in n.metadata
         assert "data_urls_materialized" not in n.metadata
         # The presentation half still travels with the result.
-        assert n.metadata["media_policy"] == {"persist": False, "pinned": False}
+        assert n.metadata["media_policy"] == {
+            "persist": False,
+            "pinned": False,
+            "inline_fallback": False,
+        }
 
     def test_file_reference_passes_through_under_any_policy(self, tmp_path):
         store = _FakeArtifactStore(tmp_path)
@@ -296,7 +320,11 @@ class TestNormalizeMultimodal:
         )
         assert n.output[0] is ref
         assert store.written == {}
-        assert n.metadata["media_policy"] == {"persist": True, "pinned": True}
+        assert n.metadata["media_policy"] == {
+            "persist": True,
+            "pinned": True,
+            "inline_fallback": False,
+        }
 
     def test_media_policy_is_only_reported_for_media_results(self):
         n = normalize_tool_output(
@@ -335,6 +363,7 @@ class TestNormalizeMultimodal:
         assert metadata["session_metadata"]["media"] == {
             "persist": False,
             "pinned": False,
+            "inline_fallback": False,
         }
         assert "media_policy" not in metadata
         assert "_image_artifact_subdir" not in metadata

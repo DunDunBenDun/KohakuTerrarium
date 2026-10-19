@@ -85,30 +85,36 @@ executor will skip it and the provider will handle it on the wire.
 ### Media in tool results
 
 A tool that returns `ImagePart` / `FilePart` media declares a
-`MediaPolicy` (`kohakuterrarium.modules.tool.media_policy`) with two
+`MediaPolicy` (`kohakuterrarium.modules.tool.media_policy`) with three
 independent switches:
 
 - `persist` (default `True`): inline `data:` images are copied into the
-  session's artifact store and listed under "Saved artifacts". A tool that
-  *looks at* media rather than *producing* it sets `persist=False`; nothing
-  is written and the part travels through as-is.
+  session's artifact store and listed under "Saved artifacts". With
+  `persist=False`, nothing is written and the part travels through as-is.
 - `pinned` (default `True`): the preview stays visible under the tool
   block. `pinned=False` folds the preview into the block's expandable body.
+- `inline_fallback` (default `False`): retain inline image bytes when storage
+  is absent or fails. Otherwise, persistence failures produce text placeholders.
 
 ```python
 from kohakuterrarium.modules.tool.media_policy import MediaPolicy
 
 
 class ScreenshotViewer(BaseTool):
-    media_policy = MediaPolicy(persist=False, pinned=False)
+    media_policy = MediaPolicy(persist=True, pinned=False, inline_fallback=True)
 ```
 
 A single result can override the class default through
 `ToolResult(metadata={"media_policy": {"persist": True}})`; only the keys
-it names change. Media that already lives on disk should be referenced by
-`file://` URL (`Path(...).resolve().as_uri()`) instead of being inlined:
-the LLM provider reads it at send time, and the web UI serves it through
-`GET /api/files/raw?path=…`. The built-in `read` tool works this way.
+it names change. The built-in `read` tool returns a snapshot of the validated
+image bytes using the policy above. The executor stores it as a session artifact
+when possible; otherwise, it stays inline. Deleting or overwriting the source
+file does not change the earlier tool result. The preview still folds away.
+
+Tools that intentionally expose live files can return a `file://` URL
+(`Path(...).resolve().as_uri()`). The provider rereads it at send time, and the
+web UI serves it through `GET /api/files/raw?path=…`; its availability and content
+remain the tool's responsibility.
 
 Testing:
 
