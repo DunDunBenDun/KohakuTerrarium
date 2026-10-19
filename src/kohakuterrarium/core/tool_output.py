@@ -246,7 +246,8 @@ def normalize_tool_output(
 
     Under the default media policy inline images become session artifacts when
     possible and safe placeholders otherwise, preventing raw base64 from
-    entering model context. A policy with ``persist=False`` leaves inline media
+    entering model context. ``inline_fallback=True`` retains inline images when
+    persistence is unavailable. A policy with ``persist=False`` leaves inline media
     untouched and writes nothing. ``file://`` and served URLs always pass
     through unchanged.
     """
@@ -280,7 +281,7 @@ def normalize_tool_output(
                 artifact_store,
                 subdir=image_subdir,
                 stem_hint=_artifact_stem(tool_name, job_id, idx, part.source_name),
-                elide_without_store=True,
+                elide_without_store=not policy.inline_fallback,
             )
             if isinstance(replacement, ImagePart) and replacement.url != part.url:
                 materialized += 1
@@ -359,7 +360,7 @@ def materialize_image_part(
         disk_path = artifact_store.write_artifact(filename, raw)
     except Exception as e:
         logger.warning(
-            "Failed to persist image artifact — falling back to placeholder",
+            "Failed to persist image artifact",
             error=str(e),
         )
         if elide_without_store:

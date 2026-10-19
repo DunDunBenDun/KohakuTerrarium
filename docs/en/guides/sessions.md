@@ -47,6 +47,12 @@ Inline bytes are immutable copies: data URLs and inline file contents, including
 
 Generated artifacts live beside the session file in `<session>.artifacts/` (`generated_images/`, `generated_videos/`, `tool_outputs/`). An explicit `--session` path, programmatic `session=`, or `Terrarium(session_dir=...)` owns those artifacts even when `KT_SESSION_DIR` points at a different default directory. Outgoing provider requests resolve stored artifact URLs to data URLs at the provider boundary; the conversation snapshot keeps the compact session-relative reference. Local images are resolved only for the content the provider selects: images removed by an existing request budget, or from roles the provider does not send as images, do not need to be readable for that request.
 
+New `read` image results capture the validated bytes at read time. They use
+session artifacts when storage is available and retain inline bytes otherwise.
+Deleting or overwriting the source image does not alter an earlier result;
+reading the path again captures the new contents. Existing saved `file://`
+references are unchanged and remain live references.
+
 Known limits in this release:
 
 - Studio rejects inline edit of user messages that contain part types other than text, image, and file.

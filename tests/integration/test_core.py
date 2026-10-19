@@ -26,6 +26,7 @@ side effect (conversation contents, tool output text, engine state).
 import asyncio
 import base64
 import copy
+import json
 import re
 import time
 from contextlib import closing
@@ -39,6 +40,7 @@ import kohakuterrarium.core.agent_message_history as branch_history
 from kohakuterrarium.bootstrap import agent_init as _agent_init_mod
 from kohakuterrarium.bootstrap import llm as _bootstrap_llm_mod
 from kohakuterrarium.builtins.tools.canvas_image import CanvasImageTool
+from kohakuterrarium.builtins.tools.read import ReadTool
 from kohakuterrarium.builtins.tools.stop_task import StopTaskTool
 from kohakuterrarium.core.agent import Agent
 from kohakuterrarium.core.branch_continuation import (
@@ -62,10 +64,7 @@ from kohakuterrarium.core.events import (
 )
 from kohakuterrarium.core.turn import Activity, TurnCapture
 from kohakuterrarium.llm.message import FilePart, ImagePart, TextPart
-from kohakuterrarium.llm.artifact_resolve import (
-    file_reference_path,
-    resolve_artifact_url,
-)
+from kohakuterrarium.llm.artifact_resolve import resolve_artifact_url
 from kohakuterrarium.llm.base import NativeToolCall
 from kohakuterrarium.llm.codex_format import to_responses_input
 from kohakuterrarium.llm.recovery import drop_last_tool_round
@@ -961,6 +960,76 @@ async def _exercise_direct_media_history(tmp_path, monkeypatch):
     finally:
         await resumed.stop()
         resumed_store.close()
+
+    for persistent in (False, True):
+        image_path = tmp_path / "snapshot.png"
+        read_args = json.dumps({"path": str(image_path)})
+        llm = _HistoryReplayLLM(
+            True,
+            plan=[
+                [NativeToolCall("read_first", "read", read_args)],
+                "first snapshot read",
+                [NativeToolCall("read_updated", "read", read_args)],
+                "updated snapshot read",
+                "continued after deletion",
+            ],
+        )
+        expected_urls = []
+        async with Terrarium(session_dir=tmp_path / "read-media") as engine:
+            creature = await engine.add_creature(
+                AgentConfig(
+                    name="readmedia", system_prompt="plain", tool_format="native"
+                ),
+                llm=llm,
+                tools=[ReadTool()],
+                pwd=tmp_path,
+                session=persistent,
+                io="headless",
+                start=True,
+            )
+            for color in ("red", "blue"):
+                Image.new("RGB", (2, 2), color).save(image_path)
+                expected_urls.append(
+                    "data:image/png;base64,"
+                    + base64.b64encode(image_path.read_bytes()).decode()
+                )
+                assert (await creature.run("read the image")).ok
+                urls = [
+                    part["image_url"]["url"]
+                    for message in llm.last_messages
+                    if isinstance(message.get("content"), list)
+                    for part in message["content"]
+                    if part.get("type") == "image_url"
+                ]
+                assert urls == expected_urls, str(llm.last_messages[-2:])
+            image_path.unlink()
+            assert (
+                await creature.run("continue after deletion")
+            ).text == "continued after deletion"
+            if persistent:
+                saved_path = creature.agent.session_store.path
+
+        if persistent:
+            restored_llm = ScriptedLLM(["continued after resume"])
+            restored, store = resume_agent(
+                saved_path, io_mode="plain", llm=restored_llm
+            )
+            try:
+                await restored.start()
+                assert (
+                    await restored.run("continue with saved images")
+                ).text == "continued after resume"
+                urls = [
+                    part["image_url"]["url"]
+                    for message in restored_llm.last_messages
+                    if isinstance(message.get("content"), list)
+                    for part in message["content"]
+                    if part.get("type") == "image_url"
+                ]
+                assert urls == expected_urls
+            finally:
+                await restored.stop()
+                store.close()
 
 
 async def _exercise_assistant_media_history(tmp_path):
@@ -3685,8 +3754,7 @@ class TestCoreIntegration:
             image_call_parts = [
                 part for part in image_user_message["content"] if isinstance(part, dict)
             ]
-            # ReadTool hands the image over as a ``file://`` reference (nothing
-            # is copied into the session); the provider boundary inlines it.
+            # ReadTool captures the validated bytes before the next model call.
             image_ref = next(
                 (
                     part["image_url"]["url"]
@@ -3696,8 +3764,7 @@ class TestCoreIntegration:
                 None,
             )
             assert image_ref is not None, image_call_parts
-            assert image_ref.startswith("file://"), image_ref
-            assert Path(file_reference_path(image_ref)).is_file()
+            assert image_ref == "data:image/png;base64," + png_b64
             assert resolve_artifact_url(image_ref) == (
                 "data:image/png;base64," + png_b64
             )

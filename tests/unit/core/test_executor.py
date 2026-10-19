@@ -296,6 +296,7 @@ class TestSubmitWaitFor:
         assert result.metadata["session_metadata"]["media"] == {
             "persist": False,
             "pinned": False,
+            "inline_fallback": False,
         }
         # The raw override key never leaks into the stored result.
         assert "media_policy" not in result.metadata
@@ -314,6 +315,7 @@ class TestSubmitWaitFor:
         assert result.metadata["session_metadata"]["media"] == {
             "persist": True,
             "pinned": False,
+            "inline_fallback": False,
         }
 
 
