@@ -18,6 +18,7 @@ the agent from the ``config_path`` in meta and re-injects state;
 """
 
 import asyncio
+import copy
 import hashlib
 import os
 import subprocess
@@ -1616,6 +1617,51 @@ class TestSessionIntegration:
         child = store.fork(str(fork_path), at_event_id=turn_two_evt["event_id"])
         child.close()
         store.close()
+
+        patched_llm["script"] = ["Continued on the regenerated lineage."]
+        resumed, resumed_store = resume_agent(session_path)
+        try:
+            resumed_messages = resumed.controller.conversation.to_messages()
+            assert [m["content"] for m in resumed_messages if m["role"] == "user"] == (
+                default_users
+            )
+            assert resumed._turn_index == 3
+            assert resumed._branch_id == 2
+            prefix = copy.deepcopy(resumed_messages)
+            await resumed.start()
+            try:
+                await resumed._process_event(
+                    create_user_input_event("continue selected lineage")
+                )
+                continued = resumed.controller.conversation.to_messages()
+                assert continued[: len(prefix)] == prefix
+                assert continued[-2:] == [
+                    {"role": "user", "content": "continue selected lineage"},
+                    {
+                        "role": "assistant",
+                        "content": "Continued on the regenerated lineage.",
+                    },
+                ]
+                continuation = next(
+                    event
+                    for event in resumed_store.get_events("brancher")
+                    if event.get("type") == "user_input"
+                    and event.get("content") == "continue selected lineage"
+                )
+                assert continuation["turn_index"] == 4
+                assert dict(continuation["parent_branch_path"])[2] == 2
+                assert dict(continuation["parent_branch_path"])[3] == 2
+            finally:
+                await resumed.stop()
+        finally:
+            resumed_store.close()
+
+        cold_again, cold_store = resume_agent(session_path)
+        try:
+            assert cold_again.controller.conversation.to_messages() == continued
+            assert cold_again._turn_index == 4
+        finally:
+            cold_store.close()
 
         forked_agent, forked_store = resume_agent(fork_path)
         try:
