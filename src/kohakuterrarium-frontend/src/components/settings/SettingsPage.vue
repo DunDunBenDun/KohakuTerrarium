@@ -25,6 +25,11 @@
             <p class="provider-section-hint">{{ t("settings.keys.storageHint") }}</p>
             <ProviderKeyRow v-for="backend in keyBackends" :key="backend.name" v-model="keyInput" :backend="backend" :editing="editingKey === backend.name" @edit="startEditKey(backend.name)" @save="saveKey(backend.name)" @cancel="editingKey = ''" @delete="deleteKey(backend.name)" />
           </section>
+          <section v-if="packageBackends.length" class="card p-4 provider-section" data-provider-section="package">
+            <h3 class="provider-section-title">{{ t("settings.providers.packageTitle") }}</h3>
+            <p class="provider-section-hint">{{ t("settings.providers.packageHint") }}</p>
+            <PackageProviderRow v-for="backend in packageBackends" :key="backend.name" :backend="backend" />
+          </section>
           <section class="card p-4 provider-section" data-provider-section="custom">
             <div class="flex items-center justify-between gap-3">
               <h3 class="provider-section-title">{{ t("settings.providers.customTitle") }}</h3>
@@ -389,6 +394,7 @@ import BackendForm from "@/components/settings/BackendForm.vue"
 import CodexLoginModal from "@/components/settings/CodexLoginModal.vue"
 import DriveSettingsPanel from "@/components/settings/DriveSettingsPanel.vue"
 import OAuthProviderRow from "@/components/settings/OAuthProviderRow.vue"
+import PackageProviderRow from "@/components/settings/PackageProviderRow.vue"
 import ProviderKeyRow from "@/components/settings/ProviderKeyRow.vue"
 import MCPServerEditModal from "@/components/settings/modals/MCPServerEditModal.vue"
 import PresetEditor from "@/components/settings/PresetEditor.vue"
@@ -698,7 +704,8 @@ const backendsWithAuth = computed(() => {
 
 const oauthBackends = computed(() => backendsWithAuth.value.filter((b) => b.built_in && isOAuthBackend(b)))
 const keyBackends = computed(() => backendsWithAuth.value.filter((b) => b.built_in && !isOAuthBackend(b)))
-const customBackends = computed(() => backendsWithAuth.value.filter((b) => !b.built_in))
+const packageBackends = computed(() => backendsWithAuth.value.filter((b) => b.source === "package"))
+const customBackends = computed(() => backendsWithAuth.value.filter((b) => !b.built_in && !packageBackends.value.includes(b)))
 
 async function loadBackends() {
   try {

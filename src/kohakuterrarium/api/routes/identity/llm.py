@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from kohakuterrarium.api.auth import verify_admin_token
 from kohakuterrarium.studio.identity.llm_backends import (
+    list_backend_types,
     list_backends,
     remove_backend,
     save_backend_record,
@@ -67,6 +68,12 @@ class DefaultModelRequest(BaseModel):
 async def get_backends():
     """Return all configured LLM backends."""
     return {"backends": list_backends()}
+
+
+@router.get("/backend-types")
+async def get_backend_types():
+    """Return every backend type a backend record may use."""
+    return {"backend_types": list_backend_types()}
 
 
 @router.post("/backends", dependencies=[Depends(verify_admin_token)])

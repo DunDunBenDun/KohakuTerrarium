@@ -8,6 +8,12 @@ this module validates and orchestrates Studio operations.
 from typing import Any
 
 from kohakuterrarium.llm.api_keys import PROVIDER_KEY_MAP
+from kohakuterrarium.llm.backend_registry import (
+    BUILTIN_BACKEND_TYPES,
+    package_backend,
+    package_backends,
+)
+from kohakuterrarium.llm.backends import package_provider_records
 from kohakuterrarium.llm.profiles import (
     LLMBackend,
     _is_available,
@@ -29,31 +35,64 @@ _BUILT_IN_BACKEND_NAMES = {
     "kimi-code",
     "glm-coding",
 }
-_SUPPORTED_BACKEND_TYPES = {
-    "openai",
-    "codex",
-    "anthropic",
-    "grok-subscription",
-    "google-antigravity",
-}
+
+
+def list_backend_types() -> list[dict[str, Any]]:
+    """Return every selectable backend type, built-in first, then package ones."""
+    rows = [
+        {
+            "name": name,
+            "display_name": name,
+            "description": "",
+            "source": "builtin",
+            "package": "",
+            "credentials": "api_key",
+        }
+        for name in sorted(BUILTIN_BACKEND_TYPES)
+    ]
+    for name, descriptor in sorted(package_backends().items()):
+        rows.append(
+            {
+                "name": name,
+                "display_name": descriptor.display_name or name,
+                "description": descriptor.description,
+                "source": "package",
+                "package": descriptor.package,
+                "credentials": descriptor.credentials,
+            }
+        )
+    return rows
 
 
 def list_backends() -> list[dict[str, Any]]:
     """Return built-in and user-configured backends as Studio records."""
-    return [
-        {
-            "name": name,
-            "backend_type": backend.backend_type,
-            "base_url": backend.base_url or "",
-            "api_key_env": backend.api_key_env or "",
-            "provider_name": backend.provider_name or "",
-            "provider_native_tools": list(backend.provider_native_tools),
-            "built_in": name in _BUILT_IN_BACKEND_NAMES,
-            "has_token": bool(get_api_key(name)),
-            "available": _is_available(name),
-        }
-        for name, backend in load_backends().items()
-    ]
+    rows = []
+    package_records = package_provider_records()
+    for name, backend in load_backends().items():
+        descriptor = package_backend(backend.backend_type)
+        if backend == package_records.get(name):
+            source = "package"
+        elif name in _BUILT_IN_BACKEND_NAMES:
+            source = "builtin"
+        else:
+            source = "user"
+        rows.append(
+            {
+                "name": name,
+                "backend_type": backend.backend_type,
+                "base_url": backend.base_url or "",
+                "api_key_env": backend.api_key_env or "",
+                "provider_name": backend.provider_name or "",
+                "provider_native_tools": list(backend.provider_native_tools),
+                "built_in": name in _BUILT_IN_BACKEND_NAMES,
+                "source": source,
+                "package": descriptor.package if descriptor else "",
+                "credentials": descriptor.credentials if descriptor else "api_key",
+                "has_token": bool(get_api_key(name)),
+                "available": _is_available(name),
+            }
+        )
+    return rows
 
 
 def get_backend(name: str) -> LLMBackend | None:
@@ -71,7 +110,7 @@ def save_backend_record(
     """Validate and persist a backend, raising ``ValueError`` for bad input."""
     if not name or not backend_type:
         raise ValueError("Name and backend type are required")
-    if backend_type not in _SUPPORTED_BACKEND_TYPES:
+    if backend_type not in BUILTIN_BACKEND_TYPES and not package_backend(backend_type):
         raise ValueError(f"Unsupported backend type: {backend_type}")
     backend = LLMBackend(
         name=name,

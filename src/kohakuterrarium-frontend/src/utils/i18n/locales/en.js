@@ -350,6 +350,12 @@ export default {
   "settings.providers.customTitle": "Custom providers",
   "settings.providers.addCustom": "Add provider",
   "settings.providers.noCustom": "No custom providers yet.",
+  "settings.providers.packageTitle": "Package providers",
+  "settings.providers.packageHint":
+    "Provided by installed packages. Remove them by uninstalling the package.",
+  "settings.providers.packageManaged": "Own login",
+  "settings.providers.packageKey": "API key",
+  "settings.providers.fromPackage": "From package {name}",
   "settings.providers.targetNode": "Manage on:",
   "settings.providers.targetNodeHint":
     "Keys + OAuth will be saved to the selected worker's local config (not the host's).",

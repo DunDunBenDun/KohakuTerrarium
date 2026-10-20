@@ -43,6 +43,7 @@ function mountSettingsPage() {
       plugins: [ElementPlus],
       stubs: {
         OAuthProviderRow: false,
+        PackageProviderRow: false,
         ProviderKeyRow: false,
         ProviderRow: false,
         ElButton: false,
@@ -115,6 +116,48 @@ describe("SettingsPage model presets", () => {
     expect(custom.text()).not.toContain("settings.oauth.login")
     await oauth.findAll("button")[0].trigger("click")
     expect(wrapper.vm.codexModalOpen).toBe(true)
+  })
+
+  it("lists package-provided backends in their own section, not as editable custom providers", async () => {
+    configAPI.getModels.mockResolvedValue([])
+    settingsAPI.getBackends.mockResolvedValue({
+      backends: [
+        { name: "openai", backend_type: "openai", built_in: true, source: "builtin" },
+        {
+          name: "echo",
+          backend_type: "echo",
+          built_in: false,
+          source: "package",
+          package: "pkg-x",
+          credentials: "external",
+          available: true,
+        },
+        {
+          name: "echo-2",
+          backend_type: "echo",
+          built_in: false,
+          source: "user",
+          package: "pkg-x",
+          credentials: "external",
+        },
+      ],
+    })
+    const wrapper = mountSettingsPage()
+    await flushPromises()
+    const pkg = wrapper.get('[data-provider-section="package"]')
+    expect(pkg.findAll(".provider-row")).toHaveLength(1)
+    expect(pkg.text()).toContain("settings.providers.fromPackage:pkg-x")
+    expect(pkg.findAll("button")).toHaveLength(0)
+    const custom = wrapper.get('[data-provider-section="custom"]')
+    expect(custom.text()).toContain("echo-2")
+    expect(custom.text()).not.toContain("pkg-x")
+  })
+
+  it("hides the package section when no package provides a backend", async () => {
+    configAPI.getModels.mockResolvedValue([])
+    const wrapper = mountSettingsPage()
+    await flushPromises()
+    expect(wrapper.find('[data-provider-section="package"]').exists()).toBe(false)
   })
 
   it("saves the key for the selected provider and updates its configured state", async () => {
