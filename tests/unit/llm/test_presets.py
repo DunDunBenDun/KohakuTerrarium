@@ -5,9 +5,11 @@ view, preset data integrity (every preset names a provider + model and
 its variation_groups patch only allowed roots), and alias resolution.
 
 ``presets`` has module-global caches (``_all_presets_cache`` /
-``_package_presets_merged``); the ``reset_preset_caches`` fixture clears
+``_all_presets_key``); the ``reset_preset_caches`` fixture clears
 them around each test so cache state never leaks.
 """
+
+import shutil
 
 import pytest
 
@@ -30,10 +32,10 @@ from kohakuterrarium.llm.variations import (
 def reset_preset_caches():
     """Clear module-global preset caches before AND after each test."""
     presets_mod._all_presets_cache = None
-    presets_mod._package_presets_merged = False
+    presets_mod._all_presets_key = None
     yield
     presets_mod._all_presets_cache = None
-    presets_mod._package_presets_merged = False
+    presets_mod._all_presets_key = None
 
 
 # ---------------------------------------------------------------------------
@@ -518,15 +520,22 @@ class TestPackagePresetMerge:
         allp = get_all_presets()
         assert ("codex", "gpt-5.4") in allp
 
-    def test_merge_runs_only_once(self, monkeypatch):
-        calls = []
+    def test_cache_follows_the_installed_package_set(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KT_CONFIG_DIR", str(tmp_path))
+        packages = tmp_path / "packages"
 
-        def _tracking():
-            calls.append(1)
-            return []
+        def install(name, preset, provider, model):
+            (packages / name).mkdir(parents=True)
+            (packages / name / "kohaku.yaml").write_text(
+                f"name: {name}\nllm_presets:\n"
+                f"  - {{name: {preset}, provider: {provider}, model: {model}}}\n"
+            )
 
-        monkeypatch.setattr(presets_mod, "list_packages", _tracking)
-        presets_mod._merge_package_presets()
-        # second call short-circuits on the _package_presets_merged guard
-        assert presets_mod._merge_package_presets() == {}
-        assert len(calls) == 1
+        install("a", "m1", "px", "one")
+        first = get_all_presets()
+        assert first[("px", "m1")]["model"] == "one"
+        assert get_all_presets() is first
+        install("b", "m2", "py", "two")
+        assert get_all_presets()[("py", "m2")]["model"] == "two"
+        shutil.rmtree(packages / "a")
+        assert ("px", "m1") not in get_all_presets()

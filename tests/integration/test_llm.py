@@ -168,7 +168,7 @@ def isolated_llm_store(tmp_path, monkeypatch):
     monkeypatch.setenv("KT_CONFIG_DIR", str(tmp_path))
 
     presets_mod._all_presets_cache = None
-    presets_mod._package_presets_merged = False
+    presets_mod._all_presets_key = None
     monkeypatch.setattr(presets_mod, "list_packages", lambda: [])
     monkeypatch.setattr(CodexTokens, "load", classmethod(lambda cls, path=None: None))
 
@@ -179,7 +179,7 @@ def isolated_llm_store(tmp_path, monkeypatch):
     yield
 
     presets_mod._all_presets_cache = None
-    presets_mod._package_presets_merged = False
+    presets_mod._all_presets_key = None
 
 
 # ---------------------------------------------------------------------------
@@ -864,13 +864,13 @@ class TestLlmIntegration:
         # ...and a non-alias name resolves to None (treat as canonical).
         assert resolve_alias("definitely-not-an-alias") is None
 
-        # 11. Package-declared ``llm_presets`` — ``presets._merge_package_presets``
+        # 11. Package-declared ``llm_presets`` — ``preset_packages.merge_package_presets``
         #     scans installed packages and folds NEW (provider, name)
         #     entries into the catalogue without overriding builtins.
         #     The autouse fixture stubbed ``list_packages`` empty; here
         #     we hand it a real package manifest and re-prime the cache.
         presets_mod._all_presets_cache = None
-        presets_mod._package_presets_merged = False
+        presets_mod._all_presets_key = None
         monkeypatch.setattr(
             presets_mod,
             "list_packages",
@@ -908,11 +908,11 @@ class TestLlmIntegration:
         assert not any(n == "no-provider" for (_p, n) in by_key)
         # The builtin codex/gpt-5.4 was NOT overridden by the package.
         assert by_key[("codex", "gpt-5.4")]["model"] != "hijacked"
-        # A second call is served from the cache (merge flag latched).
-        assert presets_mod._package_presets_merged is True
+        # Same installed-package set -> the cached catalogue is reused.
+        assert presets_mod.get_all_presets() is presets_mod.get_all_presets()
         # Reset so the autouse-fixture teardown leaves a clean slate.
         presets_mod._all_presets_cache = None
-        presets_mod._package_presets_merged = False
+        presets_mod._all_presets_key = None
 
     def test_build_tool_schemas_from_registry_workflow(self):
         """Drive the native tool-schema builder over a real registry.

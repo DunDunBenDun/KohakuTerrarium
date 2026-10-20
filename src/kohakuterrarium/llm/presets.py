@@ -41,7 +41,8 @@ from kohakuterrarium.llm.preset_groups import (
     _OR_REASONING_TOGGLE_GROUP,
     _gemini_thinking,
 )
-from kohakuterrarium.packages.walk import list_packages
+from kohakuterrarium.llm.preset_packages import merge_package_presets
+from kohakuterrarium.packages.walk import list_packages, packages_fingerprint
 from kohakuterrarium.utils.logging import get_logger
 
 __all__ = [
@@ -892,8 +893,9 @@ PRESETS: dict[str, dict[str, Any]] = {
 }
 
 # Aliases stay separate from the canonical provider/name view.
-_package_presets_merged: bool = False
 _all_presets_cache: dict[tuple[str, str], dict[str, Any]] | None = None
+# The installed-package set the cache was built from.
+_all_presets_key: tuple | None = None
 
 
 def _canonical_entry(
@@ -908,61 +910,25 @@ def _canonical_entry(
     return provider, canonical, body
 
 
-def _merge_package_presets() -> dict[tuple[str, str], dict[str, Any]]:
-    """Load valid package presets without allowing them to override built-ins."""
-    global _package_presets_merged
-    if _package_presets_merged:
-        return {}
-
-    _package_presets_merged = True
-    merged: dict[tuple[str, str], dict[str, Any]] = {}
-    builtin_keys = {
-        (data.get("provider", ""), _CANONICAL_NAMES.get(name, name))
-        for name, data in PRESETS.items()
-        if data.get("provider")
-    }
-
+def _installed_packages() -> list[dict[str, Any]]:
+    """Installed package records; a failing scan yields none."""
     try:
-        for pkg in list_packages():
-            for preset in pkg.get("llm_presets", []):
-                if not isinstance(preset, dict):
-                    continue
-                preset_name = preset.get("name")
-                provider = preset.get("provider", "")
-                if not preset_name or not provider:
-                    continue
-                key = (provider, preset_name)
-                if key in builtin_keys:
-                    logger.debug(
-                        "Package preset skipped (builtin exists)",
-                        preset=preset_name,
-                        provider=provider,
-                        package=pkg["name"],
-                    )
-                    continue
-                if key in merged:
-                    logger.debug(
-                        "Package preset skipped (duplicate)",
-                        preset=preset_name,
-                        provider=provider,
-                        package=pkg["name"],
-                    )
-                    continue
-                preset_data = {
-                    k: v for k, v in preset.items() if k not in {"name", "provider"}
-                }
-                merged[key] = preset_data
+        return list_packages()
     except Exception as e:
         logger.warning("Failed to load package presets", error=str(e), exc_info=True)
-
-    return merged
+        return []
 
 
 def get_all_presets() -> dict[tuple[str, str], dict[str, Any]]:
-    """Return cached built-in and package presets keyed by provider and name."""
-    global _all_presets_cache
-    if _all_presets_cache is not None:
+    """Built-in and package presets keyed by provider and name.
+
+    Cached until the installed-package set changes.
+    """
+    global _all_presets_cache, _all_presets_key
+    key = packages_fingerprint()
+    if _all_presets_cache is not None and key == _all_presets_key:
         return _all_presets_cache
+    packages = _installed_packages()
 
     flat: dict[tuple[str, str], dict[str, Any]] = {}
     for legacy_name, data in PRESETS.items():
@@ -972,9 +938,10 @@ def get_all_presets() -> dict[tuple[str, str], dict[str, Any]]:
         provider, bare_name, body = canonical
         flat[(provider, bare_name)] = body
 
-    flat.update(_merge_package_presets())
+    flat.update(merge_package_presets(packages, set(flat)))
     flat.update(AGY_PRESETS)
     _all_presets_cache = flat
+    _all_presets_key = key
     return _all_presets_cache
 
 

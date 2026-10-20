@@ -21,10 +21,10 @@ def gemini_key(monkeypatch, tmp_path):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setattr(presets_mod, "list_packages", lambda: [])
     presets_mod._all_presets_cache = None
-    presets_mod._package_presets_merged = False
+    presets_mod._all_presets_key = None
     yield
     presets_mod._all_presets_cache = None
-    presets_mod._package_presets_merged = False
+    presets_mod._all_presets_key = None
 
 
 async def _attach(provider, respond):
