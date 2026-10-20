@@ -76,6 +76,14 @@ class TestValidatePackage:
         _validate_package(tmp_path, "p")
         assert calls == []
 
+    def test_llm_backends_only_package_passes(self, tmp_path, monkeypatch):
+        calls = self._warn_spy(monkeypatch)
+        (tmp_path / "kohaku.yaml").write_text(
+            "name: p\nllm_backends:\n  - name: b\n    module: m\n    class: C"
+        )
+        _validate_package(tmp_path, "p")
+        assert calls == []
+
     def test_empty_package_warns(self, tmp_path, monkeypatch):
         calls = self._warn_spy(monkeypatch)
         # No creatures/, no terrariums/, no manifest extension modules.

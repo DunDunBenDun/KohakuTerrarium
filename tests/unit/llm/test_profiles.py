@@ -9,6 +9,8 @@ All file I/O is redirected to a per-test tmp dir; ``CodexTokens.load``
 and the package scanner are stubbed so resolution stays deterministic.
 """
 
+import sys
+
 import pytest
 
 from kohakuterrarium.llm import api_keys as ak
@@ -35,6 +37,8 @@ from kohakuterrarium.llm.profiles import (
     set_default_model,
 )
 
+from tests.unit._fakes.package_backend import echo_backend, install_backend_package
+
 
 @pytest.fixture(autouse=True)
 def isolated_llm_store(tmp_path, monkeypatch):
@@ -51,7 +55,7 @@ def isolated_llm_store(tmp_path, monkeypatch):
     keys_path = tmp_path / "api_keys.yaml"
 
     presets_mod._all_presets_cache = None
-    presets_mod._package_presets_merged = False
+    presets_mod._all_presets_key = None
     monkeypatch.setattr(presets_mod, "list_packages", lambda: [])
 
     monkeypatch.setattr(CodexTokens, "load", classmethod(lambda cls, path=None: None))
@@ -65,7 +69,7 @@ def isolated_llm_store(tmp_path, monkeypatch):
     yield {"profiles_path": profiles_path, "keys_path": keys_path}
 
     presets_mod._all_presets_cache = None
-    presets_mod._package_presets_merged = False
+    presets_mod._all_presets_key = None
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +519,18 @@ class TestDefaultModel:
 class TestIsAvailable:
     def test_empty_provider_not_available(self):
         assert _is_available("") is False
+
+    def test_package_backend_with_own_login_is_available(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        install_backend_package(tmp_path, "p", [echo_backend(credentials="external")])
+        assert _is_available("echo") is True
+
+    def test_package_backend_with_api_key_needs_a_key(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        install_backend_package(tmp_path, "p", [echo_backend()])
+        assert _is_available("echo") is False
+        ak.save_api_key("echo", "k")
+        assert _is_available("echo") is True
 
     def test_codex_unavailable_without_tokens(self):
         # CodexTokens.load stubbed to None

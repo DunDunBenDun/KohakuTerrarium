@@ -254,6 +254,26 @@ def list_package_drive_registrations() -> dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------
+# llm_backends: (package-provided LLM backend types)
+# ---------------------------------------------------------------------------
+
+
+def iter_package_llm_backend_entries() -> list[tuple[str, dict]]:
+    """Return ``(package_name, entry)`` for every named ``llm_backends:`` entry.
+
+    Does NOT import the implementation module and does not dedupe; the
+    backend registry applies the per-name collision policy.
+    """
+    out: list[tuple[str, dict]] = []
+    for pkg in list_packages():
+        pkg_name = pkg.get("name", "?")
+        for entry in pkg.get("llm_backends", []) or []:
+            if isinstance(entry, dict) and entry.get("name"):
+                out.append((pkg_name, entry))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # A.5 — prompts: / templates: (shared Jinja fragments)
 # ---------------------------------------------------------------------------
 

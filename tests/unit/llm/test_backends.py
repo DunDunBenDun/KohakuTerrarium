@@ -7,6 +7,9 @@ the ``validate_backend_type`` accept/reject contract. The profiles
 file is isolated to a per-test tmp dir via ``KT_CONFIG_DIR``.
 """
 
+import shutil
+import sys
+
 import pytest
 
 from kohakuterrarium.llm.backends import (
@@ -15,9 +18,12 @@ from kohakuterrarium.llm.backends import (
     legacy_provider_from_data,
     load_backends,
     load_yaml_store,
+    package_provider_records,
     save_yaml_store,
     validate_backend_type,
 )
+
+from tests.unit._fakes.package_backend import echo_backend, install_backend_package
 
 
 @pytest.fixture(autouse=True)
@@ -29,6 +35,7 @@ def isolated_store(tmp_path, monkeypatch):
     the operator's real ``~/.kohakuterrarium/``.
     """
     monkeypatch.setenv("KT_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(sys, "path", list(sys.path))
     return tmp_path / "llm_profiles.yaml"
 
 
@@ -282,3 +289,45 @@ class TestEnvInterpolation:
         set_default_model("gpt-x")  # a save path that re-serialises backends
         raw = load_yaml_store()
         assert raw["backends"]["custom"]["base_url"] == "${KT_BE_HOST}/v1"
+
+
+class TestPackageBackends:
+    """Backend types and provider records contributed by ``llm_backends:``."""
+
+    def test_package_type_is_valid_and_unknown_still_rejected(self, isolated_store):
+        install_backend_package(isolated_store.parent, "p", [echo_backend()])
+        assert validate_backend_type("echo") == "echo"
+        with pytest.raises(ValueError, match="Unsupported"):
+            validate_backend_type("ghost")
+
+    def test_load_backends_adds_the_package_record(self, isolated_store):
+        install_backend_package(isolated_store.parent, "p", [echo_backend()])
+        backend = load_backends()["echo"]
+        assert backend == package_provider_records()["echo"]
+        assert backend.backend_type == "echo"
+
+    def test_user_record_overrides_the_package_record(self, isolated_store):
+        install_backend_package(isolated_store.parent, "p", [echo_backend()])
+        save_yaml_store(
+            {"backends": {"echo": {"backend_type": "echo", "base_url": "u"}}}
+        )
+        assert load_backends()["echo"].base_url == "u"
+
+    def test_package_cannot_replace_a_builtin_provider_record(self, isolated_store):
+        install_backend_package(isolated_store.parent, "p", [echo_backend("gemini")])
+        assert load_backends()["gemini"].backend_type == "openai"
+
+    def test_collision_keeps_builtins_working(self, isolated_store):
+        install_backend_package(isolated_store.parent, "a", [echo_backend()])
+        install_backend_package(isolated_store.parent, "b", [echo_backend()])
+        backends = load_backends()
+        assert "echo" not in backends
+        assert "codex" in backends
+
+    def test_uninstall_removes_the_type(self, isolated_store):
+        install_backend_package(isolated_store.parent, "p", [echo_backend()])
+        assert "echo" in load_backends()
+        shutil.rmtree(isolated_store.parent / "packages" / "p")
+        assert "echo" not in load_backends()
+        with pytest.raises(ValueError):
+            validate_backend_type("echo")

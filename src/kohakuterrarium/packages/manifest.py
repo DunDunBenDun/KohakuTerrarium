@@ -44,7 +44,7 @@ def _validate_package(pkg_dir: Path, name: str) -> None:
     """Basic validation of a package structure.
 
     A package is valid if it has at least one of: creatures/, terrariums/,
-    or manifest entries for tools, plugins, or llm_presets.
+    or manifest entries for tools, plugins, llm_presets, or llm_backends.
     """
     has_creatures = (pkg_dir / "creatures").is_dir()
     has_terrariums = (pkg_dir / "terrariums").is_dir()
@@ -54,7 +54,8 @@ def _validate_package(pkg_dir: Path, name: str) -> None:
         has_tools = bool(manifest.get("tools"))
         has_plugins = bool(manifest.get("plugins"))
         has_presets = bool(manifest.get("llm_presets"))
-        if not has_tools and not has_plugins and not has_presets:
+        has_backends = bool(manifest.get("llm_backends"))
+        if not (has_tools or has_plugins or has_presets or has_backends):
             logger.warning(
                 "Package has no creatures/, terrariums/, or extension modules",
                 package=name,

@@ -486,6 +486,7 @@ src/kohakuterrarium/
 │   ├── presets.py            # 50+ model presets (pure data) (+ preset_aliases.py,
 │   │                         #   preset_store.py)
 │   ├── backends.py           # Backend (provider) persistence: YAML store shared with presets
+│   ├── backend_registry.py   # Package-provided backend types (`llm_backends:` manifest slot)
 │   ├── profile_types.py      # LLMBackend / LLMPreset / LLMProfile dataclasses
 │   ├── profiles.py           # Profile resolution + management
 │   ├── variations.py         # `name@group=option` variation selectors

@@ -10,6 +10,7 @@ import pytest
 from kohakuterrarium.packages import slots as slots_mod
 from kohakuterrarium.packages.slots import (
     list_package_commands,
+    iter_package_llm_backend_entries,
     list_package_drive_registrations,
     list_package_prompts,
     list_package_skills,
@@ -149,6 +150,26 @@ class TestResolvePackageUserCommand:
             [{"name": "p", "user_commands": [{"name": "u1"}]}],
         )
         assert set(list_package_user_commands()) == {"u1"}
+
+
+class TestIterPackageLlmBackendEntries:
+    def test_keeps_owning_package_and_drops_unnamed(self, monkeypatch):
+        entry = {"name": "echo", "module": "m", "class": "C"}
+        _patch_packages(
+            monkeypatch,
+            [{"name": "p", "llm_backends": [entry, "junk", {"module": "x"}]}],
+        )
+        assert iter_package_llm_backend_entries() == [("p", entry)]
+
+    def test_duplicates_are_kept_for_the_registry_to_judge(self, monkeypatch):
+        _patch_packages(
+            monkeypatch,
+            [
+                {"name": "a", "llm_backends": [{"name": "echo"}]},
+                {"name": "b", "llm_backends": [{"name": "echo"}]},
+            ],
+        )
+        assert [pkg for pkg, _ in iter_package_llm_backend_entries()] == ["a", "b"]
 
 
 class TestResolvePackageDriveRegistration:

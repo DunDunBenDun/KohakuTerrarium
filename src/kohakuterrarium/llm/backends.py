@@ -11,7 +11,13 @@ from typing import Any
 
 import yaml
 
+from kohakuterrarium.errors import ConfigError
 from kohakuterrarium.llm.api_keys import KT_DIR, PROVIDER_KEY_MAP
+from kohakuterrarium.llm.backend_registry import (
+    BUILTIN_BACKEND_TYPES,
+    package_backend,
+    package_backends,
+)
 from kohakuterrarium.llm.profile_types import LLMBackend
 from kohakuterrarium.utils.config_dir import config_dir
 from kohakuterrarium.utils.logging import get_logger
@@ -198,6 +204,8 @@ def load_backends() -> dict[str, LLMBackend]:
     """Merge providers while preserving environment templates for consume-time expansion."""
     data = load_yaml_store()
     backends = _built_in_providers()
+    for name, backend in package_provider_records().items():
+        backends.setdefault(name, backend)
 
     user_backends = data.get("backends") or data.get("providers") or {}
     if isinstance(user_backends, dict):
@@ -233,15 +241,18 @@ def load_backends() -> dict[str, LLMBackend]:
     return backends
 
 
+def package_provider_records() -> dict[str, LLMBackend]:
+    """Provider records contributed by installed packages' ``llm_backends:``."""
+    try:
+        return {name: d.to_backend() for name, d in package_backends().items()}
+    except ConfigError as exc:
+        logger.error("Package LLM backends unavailable", error=str(exc))
+        return {}
+
+
 def validate_backend_type(backend_type: str) -> str:
     """Validate and return a canonical provider transport type."""
     normalized = _normalize_backend_type(backend_type)
-    if normalized not in {
-        "openai",
-        "anthropic",
-        "codex",
-        "grok-subscription",
-        "google-antigravity",
-    }:
-        raise ValueError(f"Unsupported backend_type: {backend_type}")
-    return normalized
+    if normalized in BUILTIN_BACKEND_TYPES or package_backend(normalized):
+        return normalized
+    raise ValueError(f"Unsupported backend_type: {backend_type}")

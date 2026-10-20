@@ -37,6 +37,11 @@ import yaml
 
 from kohakuterrarium import Terrarium
 from kohakuterrarium.errors import PackageNotInstalledError
+from kohakuterrarium.llm.backends import (
+    load_backends,
+    load_yaml_store,
+    validate_backend_type,
+)
 from kohakuterrarium.testing.llm import ScriptedLLM
 from kohakuterrarium.packages import locations
 from kohakuterrarium.packages.install import install_package, uninstall_package
@@ -73,6 +78,7 @@ from kohakuterrarium.packages.slots import (
 from kohakuterrarium.packages.walk import get_package_modules, list_packages
 from kohakuterrarium.studio.catalog import drive_registrations as drive_catalog
 from kohakuterrarium.studio.catalog import packages as studio_packages
+from kohakuterrarium.studio.identity.llm_backends import save_backend_record
 from kohakuterrarium.terrarium.drive.errors import DriveValidationError
 from kohakuterrarium.terrarium.drive.registration import resolve_registration
 
@@ -271,6 +277,44 @@ def _make_drive_registration_bundle(
         "        return DriveRegistrationDescriptor(\n"
         f"            name={reg_name!r}, kind={reg_name!r}, schema_version=1\n"
         "        )\n",
+    )
+    return src
+
+
+def _make_llm_backend_bundle(root: Path, pkg_name: str) -> Path:
+    """Build a bundle declaring an ``llm_backends:`` type plus two presets on it."""
+    src = root / f"{pkg_name}-src"
+    manifest = {
+        "name": pkg_name,
+        "version": "0.1.0",
+        "llm_backends": [
+            {
+                "name": "echo",
+                "module": "kt_echo_backend",
+                "class": "EchoProvider",
+                "credentials": "external",
+            }
+        ],
+        "llm_presets": [
+            {"name": "echo-small", "provider": "echo", "model": "small-1"},
+            {"name": "echo-large", "provider": "echo", "model": "large-1"},
+        ],
+    }
+    _write(src / "kohaku.yaml", yaml.safe_dump(manifest, sort_keys=False))
+    _write(
+        src / "kt_echo_backend.py",
+        "from kohakuterrarium.llm.base import BaseLLMProvider, ChatResponse, LLMConfig\n\n\n"
+        "class EchoProvider(BaseLLMProvider):\n"
+        "    @classmethod\n"
+        "    def from_profile(cls, profile):\n"
+        "        return cls(LLMConfig(model=profile.model))\n\n"
+        "    async def _stream_chat(self, messages, *, tools=None, **kwargs):\n"
+        "        text = messages[-1].get('content')\n"
+        "        if isinstance(text, list):\n"
+        "            text = ' '.join(p.get('text', '') for p in text)\n"
+        "        yield f'{self.config.model} heard {text}'\n\n"
+        "    async def _complete_chat(self, messages, **kwargs):\n"
+        "        return ChatResponse('ok', 'stop', {}, self.config.model)\n",
     )
     return src
 
@@ -687,6 +731,45 @@ class TestPackagesIntegration:
         uninstall_package("drivepkg")
         uninstall_package("drivepkg2")
         assert list_package_drive_registrations() == {}
+
+        # ---- llm_backends: slot (package-provided LLM backend type) ----
+        import sys as _sys
+
+        before_path = list(_sys.path)
+        try:
+            llm_src = _make_llm_backend_bundle(bundle_root, "echopkg")
+            assert install_package(str(llm_src)) == "echopkg"
+            assert validate_backend_type("echo") == "echo"
+            assert load_backends()["echo"].backend_type == "echo"
+            # Discovery alone imports nothing from the package.
+            assert "kt_echo_backend" not in _sys.modules
+            engine = Terrarium()
+            try:
+                creature = await engine.add_creature(
+                    "@alpha/creatures/swe", llm="echo/echo-small"
+                )
+                agent = creature.agent
+                assert type(agent.llm).__name__ == "EchoProvider"
+                assert agent.llm.config.model == "small-1"
+                result = await agent.run("ping")
+                assert "small-1 heard ping" in result.text
+                # Model switch goes through the same package dispatch.
+                assert agent.switch_model("echo/echo-large") == "echo/echo-large"
+                assert agent.llm.config.model == "large-1"
+                result = await agent.run("again")
+                assert "large-1 heard again" in result.text
+            finally:
+                await engine.shutdown()
+            # Saving an unrelated backend never freezes the package record.
+            save_backend_record("mine", "openai", base_url="https://x")
+            assert "echo" not in (load_yaml_store().get("backends") or {})
+            uninstall_package("echopkg")
+            with pytest.raises(ValueError, match="Unsupported"):
+                validate_backend_type("echo")
+            assert "echo" not in load_backends()
+        finally:
+            _sys.path[:] = before_path
+            _sys.modules.pop("kt_echo_backend", None)
 
         # ---- a bare bundle (no creatures/terrariums/extensions) ----
         # Install still succeeds (validation only WARNS); the manifest is

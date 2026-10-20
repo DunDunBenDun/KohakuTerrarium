@@ -6,6 +6,8 @@ heuristic, provider-priority resolution, and the serialised payload
 shape. ``PROFILES_PATH`` is redirected to a per-test tmp file.
 """
 
+import sys
+
 import pytest
 
 from kohakuterrarium.llm.backends import save_yaml_store
@@ -18,6 +20,8 @@ from kohakuterrarium.llm.preset_store import (
     serialize_user_data,
 )
 from kohakuterrarium.llm.profile_types import LLMBackend, LLMPreset
+
+from tests.unit._fakes.package_backend import echo_backend, install_backend_package
 
 
 @pytest.fixture(autouse=True)
@@ -183,6 +187,19 @@ class TestSerializeUserData:
         data = serialize_user_data({}, {"openai": builtin, "myproxy": custom})
         # only the custom backend is persisted; builtins are implicit
         assert set(data["backends"]) == {"myproxy"}
+
+    def test_unchanged_package_backend_is_not_persisted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        install_backend_package(tmp_path, "p", [echo_backend()])
+        package_record = LLMBackend(
+            name="echo", backend_type="echo", provider_name="echo"
+        )
+        edited = LLMBackend(
+            name="echo", backend_type="echo", provider_name="echo", base_url="u"
+        )
+        assert "backends" not in serialize_user_data({}, {"echo": package_record})
+        data = serialize_user_data({}, {"echo": edited})
+        assert data["backends"]["echo"]["base_url"] == "u"
 
     def test_presets_serialised_in_nested_shape_without_provider_key(self):
         preset = LLMPreset(name="my-gpt", model="gpt-4o", provider="openai")

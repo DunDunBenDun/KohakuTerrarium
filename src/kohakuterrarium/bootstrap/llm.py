@@ -9,6 +9,13 @@ from kohakuterrarium.errors import LLMNotConfiguredError
 from kohakuterrarium.core.config import AgentConfig
 from kohakuterrarium.llm.base import LLMConfig, LLMProvider
 from kohakuterrarium.llm import api_keys as _api_keys
+from kohakuterrarium.llm.backend_registry import (
+    BUILTIN_BACKEND_TYPES,
+    INTERNAL_BACKEND_TYPES,
+    PackageBackendError,
+    load_backend_class,
+    package_backend,
+)
 from kohakuterrarium.llm.profiles import (
     LLMProfile,
     get_api_key,
@@ -150,6 +157,19 @@ def _create_from_profile(profile: LLMProfile) -> LLMProvider:
         provider=profile.provider,
         backend_type=profile.backend_type,
     )
+
+    if package_backend(profile.backend_type) is not None:
+        provider = load_backend_class(profile.backend_type).from_profile(profile)
+        provider._profile_max_context = profile.max_context
+        _apply_backend_native_identity(provider, profile)
+        return provider
+    if profile.backend_type and profile.backend_type not in (
+        BUILTIN_BACKEND_TYPES | INTERNAL_BACKEND_TYPES
+    ):
+        raise PackageBackendError(
+            f"Backend type {profile.backend_type!r} of profile {profile.name!r} "
+            "is not built in and no installed package provides it"
+        )
 
     if profile.backend_type == "fake_test":
         # This backend validates the full credential path without network access.

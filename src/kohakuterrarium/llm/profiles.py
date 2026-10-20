@@ -12,6 +12,7 @@ from kohakuterrarium.llm.api_keys import PROVIDER_KEY_MAP as PROVIDER_KEY_MAP
 from kohakuterrarium.llm.api_keys import get_api_key
 from kohakuterrarium.llm.api_keys import list_api_keys as list_api_keys
 from kohakuterrarium.llm.api_keys import save_api_key
+from kohakuterrarium.llm.backend_registry import package_backend
 from kohakuterrarium.llm.backends import (
     _BUILTIN_PROVIDER_NAMES,
 )
@@ -555,6 +556,9 @@ def _is_available(provider_name: str) -> bool:
     if provider_name == "grok-subscription":
         return GrokTokens.available()
     if backend:
+        descriptor = package_backend(backend.backend_type)
+        if descriptor is not None and descriptor.manages_own_credentials:
+            return True
         if get_api_key(provider_name):
             return True
         if backend.api_key_env and get_api_key(backend.api_key_env):

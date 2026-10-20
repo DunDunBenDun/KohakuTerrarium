@@ -13,6 +13,7 @@ from kohakuterrarium.llm.backends import (
     legacy_provider_from_data as _legacy_provider_from_data,
 )
 from kohakuterrarium.llm.backends import load_yaml_store as _load_yaml
+from kohakuterrarium.llm.backends import package_provider_records
 from kohakuterrarium.llm.profile_types import LLMBackend, LLMPreset
 
 
@@ -125,10 +126,11 @@ def serialize_user_data(
         data["default_model"] = default_model
     if subagent_models:
         data["subagent_models"] = dict(subagent_models)
+    package_records = package_provider_records()
     user_backends = {
         name: backend.to_dict()
         for name, backend in backends.items()
-        if name not in _BUILTIN_PROVIDER_NAMES
+        if name not in _BUILTIN_PROVIDER_NAMES and backend != package_records.get(name)
     }
     if user_backends:
         data["backends"] = user_backends

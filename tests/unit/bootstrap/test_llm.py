@@ -22,12 +22,19 @@ from kohakuterrarium.bootstrap.llm import (
     create_llm_from_profile_name,
 )
 from kohakuterrarium.core.config_types import AgentConfig
+from kohakuterrarium.errors import LLMNotConfiguredError
 from kohakuterrarium.llm.anthropic_provider import AnthropicProvider
 from kohakuterrarium.llm.codex_provider import CodexOAuthProvider
 from kohakuterrarium.llm.grok_auth import GrokToken
 from kohakuterrarium.llm.grok_provider import GrokSubscriptionProvider
 from kohakuterrarium.llm.openai import OpenAIProvider
 from kohakuterrarium.llm.profile_types import LLMProfile
+
+from tests.unit._fakes.package_backend import (
+    echo_backend,
+    install_backend_package,
+    kt_home,  # noqa: F401
+)
 
 # ── _agent_config_default ───────────────────────────────────────
 
@@ -240,6 +247,38 @@ class TestCreateLLMFromProfileName:
 
 
 class TestCreateFromProfile:
+    def test_package_backend_builds_from_package_without_api_key(
+        self, kt_home, monkeypatch
+    ):
+        install_backend_package(kt_home, "p", [echo_backend(credentials="external")])
+
+        def _no_key(_provider):
+            raise AssertionError("a package backend must not look up an API key")
+
+        monkeypatch.setattr(llm_mod, "get_api_key", _no_key)
+        profile = LLMProfile(
+            name="echo-1",
+            model="echo-model",
+            provider="echo",
+            backend_type="echo",
+            max_context=4321,
+            backend_provider_name="echo",
+        )
+        provider = _create_from_profile(profile)
+        assert type(provider).__name__ == "EchoProvider"
+        assert type(provider).built_from == [profile]
+        assert provider.config.model == "echo-model"
+        assert provider._profile_max_context == 4321
+        assert provider.provider_name == "echo"
+        assert provider._llm_identifier == "echo/echo-1"
+
+    def test_uninstalled_package_backend_raises_typed_error(self, kt_home):
+        profile = LLMProfile(
+            name="x", model="m", provider="ghost", backend_type="ghost"
+        )
+        with pytest.raises(LLMNotConfiguredError, match="'ghost'"):
+            _create_from_profile(profile)
+
     def test_grok_subscription_backend_builds_dedicated_provider(self, monkeypatch):
         monkeypatch.setattr(
             "kohakuterrarium.llm.grok_provider.GrokTokens.load_candidates",
