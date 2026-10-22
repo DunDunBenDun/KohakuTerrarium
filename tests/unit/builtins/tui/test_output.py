@@ -1,14 +1,66 @@
 import asyncio
 
 import pytest
-from textual.widgets import Label
+from textual.widgets import Label, TabbedContent
 from textual.widgets._markdown import MarkdownFence
 
 from kohakuterrarium.builtins.tui.output import TUIOutput
+from kohakuterrarium.builtins.tui.app import _safe_id
 from kohakuterrarium.builtins.tui.session import TUISession
-from kohakuterrarium.builtins.tui.widgets import UserMessage
+from kohakuterrarium.builtins.tui.widgets import ChatInput, UserMessage
 from kohakuterrarium.builtins.tui.widgets.blocks import ToolBlock
 from kohakuterrarium.modules.output.event import OutputEvent
+
+
+async def test_processing_tracks_active_tab_during_overlapping_turns():
+    session = TUISession()
+    session.set_terrarium_tabs(["alice", "bob"])
+    await session.start()
+    alice, bob = TUIOutput(), TUIOutput()
+    alice._tui = bob._tui = session
+    alice._default_target, bob._default_target = "alice", "bob"
+    app = session._app
+    async with app.run_test() as pilot:
+        await alice.on_processing_start()
+        await pilot.pause()
+        timer = app._thinking_timer
+        app.on_chat_input_submitted(ChatInput.Submitted("queued for alice"))
+        await pilot.pause()
+        await bob.on_processing_start()
+        await pilot.pause()
+        assert app._thinking_timer is timer
+        assert len(app._queued_widgets) == 1
+        await bob.on_processing_end()
+        await pilot.pause()
+        assert app._is_processing
+        assert app._thinking_active
+        tabs = app.query_one("#chat-tabs", TabbedContent)
+        tabs.active = f"tab-{_safe_id('bob')}"
+        await pilot.pause()
+        assert not app._is_processing
+        assert not app._thinking_active
+        tabs.active = f"tab-{_safe_id('alice')}"
+        await pilot.pause()
+        assert app._is_processing
+        assert app._thinking_active
+        await alice._on_stop()
+        await pilot.pause()
+        assert not app._is_processing
+        assert not app._thinking_active
+
+
+async def test_single_creature_processing_lifecycle():
+    session = TUISession()
+    await session.start()
+    output = TUIOutput()
+    output._tui = session
+    async with session._app.run_test() as pilot:
+        await output.on_processing_start()
+        await pilot.pause()
+        assert session._app._is_processing
+        await output.on_processing_end()
+        await pilot.pause()
+        assert not session._app._is_processing
 
 
 class FakeTUI:

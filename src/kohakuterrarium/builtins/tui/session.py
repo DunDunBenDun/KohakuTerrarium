@@ -781,9 +781,10 @@ class TUISession(TabModelRegistryMixin):
         # Framework logs are persisted by session output instead of rendered in chat.
         pass
 
-    def start_thinking(self) -> None:
+    def start_thinking(self, target: str = "") -> None:
+        if target and self._terrarium_tabs and target != self.get_active_tab():
+            return
         if self._app and self._app.is_running:
-            self._app._is_processing = True
             if self._app._queued_widgets:
                 chat = self._app._get_active_chat()
                 for qw in self._app._queued_widgets:
@@ -801,12 +802,6 @@ class TUISession(TabModelRegistryMixin):
                 if chat:
                     chat.scroll_end(animate=False)
                 self._app._queued_widgets.clear()
-            try:
-                self._app.start_thinking_animation()
-            except Exception as e:
-                logger.warning(
-                    "TUI start_thinking_animation failed", error=str(e), exc_info=True
-                )
 
     def stop_thinking(self) -> None:
         if self._app and self._app.is_running:
