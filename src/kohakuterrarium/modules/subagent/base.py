@@ -326,6 +326,13 @@ class SubAgent:
                 subagent_name=self.config.name,
             )
             break
+        else:
+            return self._build_result(
+                output_parts,
+                tools_used,
+                error=f"Sub-agent reached its turn limit ({self.config.max_turns}); work may be incomplete.",
+                limit_reached="max_turns",
+            )
 
         return self._build_result(output_parts, tools_used)
 
@@ -610,10 +617,18 @@ class SubAgent:
                 self.conversation.append("user", parts)
 
     def _build_result(
-        self, output_parts: list[str], tools_used: list[str]
+        self,
+        output_parts: list[str],
+        tools_used: list[str],
+        *,
+        error: str | None = None,
+        limit_reached: str | None = None,
     ) -> SubAgentResult:
         """Build the final SubAgentResult, saving conversation if possible."""
         final_output = "".join(output_parts).strip()
+        metadata = {"tools_used": tools_used}
+        if limit_reached:
+            metadata["limit_reached"] = limit_reached
 
         if self._session_store:
             try:
@@ -630,7 +645,9 @@ class SubAgent:
                         ),
                         "turns": self._turns,
                         "tools_used": tools_used,
-                        "success": True,
+                        "success": error is None,
+                        "error": error,
+                        "limit_reached": limit_reached,
                         "duration": self._calculate_duration(),
                         "output_preview": final_output[:500],
                     },
@@ -646,14 +663,15 @@ class SubAgent:
 
         return SubAgentResult(
             output=final_output,
-            success=True,
+            success=error is None,
+            error=error,
             turns=self._turns,
             duration=self._calculate_duration(),
             total_tokens=self._total_tokens,
             prompt_tokens=self._prompt_tokens,
             completion_tokens=self._completion_tokens,
             cached_tokens=self._cached_tokens,
-            metadata={"tools_used": tools_used},
+            metadata=metadata,
         )
 
     async def _execute_tools(

@@ -149,6 +149,9 @@ class TestLimits:
         )
         result = await sa.run("loop forever")
         assert result.turns == 2
+        assert result.success is False
+        assert "turn limit" in result.error
+        assert result.metadata["limit_reached"] == "max_turns"
 
     async def test_missing_tool_recorded_and_noted_in_prompt(self):
         # A tool requested in config but absent from the parent registry
