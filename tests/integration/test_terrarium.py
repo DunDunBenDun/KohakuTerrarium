@@ -1158,6 +1158,36 @@ class TestTerrariumIntegration:
                     "after split resume",
                 ]
 
+        # Without an autosession directory, only the retained child persists.
+        async with Terrarium(
+            drive_config=DriveRuntimeConfig(enabled=False)
+        ) as explicit:
+            pair = [
+                await explicit.add_creature(
+                    _agent_config(name, tmp_path),
+                    start=True,
+                    io="headless",
+                    session=False,
+                )
+                for name in ("left", "right")
+            ]
+            await explicit.connect(*pair, channel="manual")
+            await explicit.attach_session(
+                pair[0].graph_id, tmp_path / "manual.kohakutr"
+            )
+            original = pair[0].agent.session_store
+            await explicit.disconnect(*pair, channel="manual")
+            retained = next(c for c in pair if c.graph_id in explicit._session_stores)
+            detached = next(c for c in pair if c is not retained)
+            assert detached.agent.session_store is None
+            await detached.run("without persistence", timeout=5)
+            assert original.get_events(detached.name) == []
+            await retained.run("with persistence", timeout=5)
+            assert any(
+                e.get("content") == "with persistence"
+                for e in original.get_events(retained.name)
+            )
+
     async def test_split_drive_lifecycle_no_repo_race(
         self, make_service, tmp_path, monkeypatch
     ):

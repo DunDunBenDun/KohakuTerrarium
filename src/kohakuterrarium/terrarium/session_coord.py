@@ -394,6 +394,11 @@ def apply_split(
         # ``new_graph_ids[0]``) and copy nothing onto the others.
         keep_gid = delta.new_graph_ids[0]
         engine._session_stores[keep_gid] = parent
+        for gid in delta.old_graph_ids:
+            if gid != keep_gid:
+                engine._session_stores.pop(gid, None)
+        for gid in delta.new_graph_ids[1:]:
+            _attach_store_to_graph(engine, gid, None)
         _refresh_meta_for_split_graph(engine, keep_gid, parent)
         if owned is not None:
             for gid in delta.old_graph_ids:
@@ -534,7 +539,7 @@ def _refresh_meta_for_split_graph(
 
 
 def _attach_store_to_graph(
-    engine: "Terrarium", graph_id: str, store: SessionStore
+    engine: "Terrarium", graph_id: str, store: SessionStore | None
 ) -> None:
     """Point every creature in ``graph_id`` at ``store``.
 

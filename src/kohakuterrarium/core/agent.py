@@ -864,7 +864,11 @@ class Agent(
         # Controller needs direct access for artifact writes.
         if hasattr(self, "controller") and self.controller is not None:
             self.controller.session_store = store
-        if (
+        if store is None:
+            if self._session_output is not None:
+                self.output_router.remove_secondary(self._session_output)
+                self._session_output = None
+        elif (
             self._session_output is None
             or getattr(self._session_output, "_store", None) is not store
         ):
@@ -883,6 +887,9 @@ class Agent(
         self.trigger_manager._agent_name = self.config.name
         if self.compact_manager:
             self.compact_manager._session_store = store
+        if store is None:
+            return
+        if self.compact_manager:
             restore_compact_state_from_session(
                 self.compact_manager, store, self.config.name
             )
