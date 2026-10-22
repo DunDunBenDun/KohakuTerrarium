@@ -576,6 +576,7 @@ class TestApplySplit:
                 ),
             )
             assert eng._session_stores["a"] is parent
+            assert "g1" not in eng._session_stores
         finally:
             parent.close()
 
@@ -732,3 +733,51 @@ async def test_topology_rebinding_preserves_open_text(tmp_path, operation):
                 assert [e["content"] for e in events if e["type"] == "text_chunk"] == [
                     f"tail-{name}"
                 ]
+
+
+async def test_split_without_session_dir_detaches_other_child(tmp_path):
+    async with Terrarium(
+        pwd=tmp_path, drive_config=DriveRuntimeConfig(enabled=False)
+    ) as engine:
+        members = [
+            await engine.add_creature(
+                AgentConfig(name=name, system_prompt="test", tools=[]),
+                llm=ScriptedLLM(["reply"] * 4),
+                io="headless",
+                start=True,
+                session=False,
+            )
+            for name in ("alice", "bob")
+        ]
+        await engine.connect(*members, channel="bridge")
+        await engine.attach_session(members[0].graph_id, tmp_path / "parent.kohakutr")
+        parent = members[0].agent.session_store
+        for member in members:
+            await member.run("before split", timeout=5)
+        await engine.disconnect(*members, channel="bridge")
+        kept = next(m for m in members if m.graph_id in engine._session_stores)
+        detached = next(m for m in members if m is not kept)
+        agent = detached.agent
+        assert kept.agent.session_store is parent
+        assert agent.session_store is None
+        assert agent.controller.session_store is None
+        assert agent._session_output is None
+        assert agent.subagent_manager._session_store is None
+        assert agent.trigger_manager._session_store is None
+        assert agent.compact_manager._session_store is None
+        before = parent.get_events(detached.name)
+        assert (await detached.run("unpersisted turn", timeout=5)).ok
+        assert parent.get_events(detached.name) == before
+        assert (await kept.run("persisted turn", timeout=5)).ok
+        assert any(
+            e.get("content") == "persisted turn" for e in parent.get_events(kept.name)
+        )
+        await engine.attach_session(detached.graph_id, tmp_path / "child.kohakutr")
+        child = detached.agent.session_store
+        assert child is not parent
+        assert (await detached.run("reattached turn", timeout=5)).ok
+        assert any(
+            e.get("content") == "reattached turn"
+            for e in child.get_events(detached.name)
+        )
+        assert parent.get_events(detached.name) == before
