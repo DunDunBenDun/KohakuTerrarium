@@ -53,6 +53,7 @@ from kohakuterrarium.terrarium.history_remote import RemoteHistoryServiceMixin
 from kohakuterrarium.terrarium.remote_recipe import RemoteRecipeServiceMixin
 from kohakuterrarium.terrarium.service import CreatureInfo
 from kohakuterrarium.terrarium.service_dto import BranchMutationResult
+from kohakuterrarium.terrarium.subagent_service import RemoteSubagentServiceMixin
 from kohakuterrarium.terrarium.topology import (
     ChannelInfo,
     GraphTopology,
@@ -166,6 +167,7 @@ def _branch_mutation_result(body: dict[str, Any]) -> BranchMutationResult:
 
 class RemoteTerrariumService(
     RemoteHistoryServiceMixin,
+    RemoteSubagentServiceMixin,
     RemoteRecipeServiceMixin,
     RemoteDriveServiceMixin,
     DriveServiceUnsupportedMixin,

@@ -30,6 +30,7 @@ import kohakuterrarium.terrarium.root as _root
 import kohakuterrarium.terrarium.topology as _topo
 import kohakuterrarium.terrarium.wiring as _wiring
 import kohakuterrarium.terrarium.drive.runtime as _drive_runtime
+from kohakuterrarium.core.context_snapshot import ContextSnapshot
 from kohakuterrarium.core.environment import Environment
 from kohakuterrarium.session.store import SessionStore
 from kohakuterrarium.terrarium.creature_host import (
@@ -374,6 +375,10 @@ class Terrarium:
         _lifecycle.apply_split_bookkeeping(self, delta)
         await _checkpoint.checkpoint_many(self, delta.new_graph_ids)
         await self._drain_drive_topology()
+
+    def capture_context(self, creature: CreatureRef) -> ContextSnapshot:
+        """Capture the immutable context of a creature hosted by this engine."""
+        return self._creature(creature).capture_context()
 
     def get_creature(self, creature_id: str) -> Creature:
         """Return the creature with the given id.  Raises ``KeyError``."""

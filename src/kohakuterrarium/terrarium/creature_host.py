@@ -26,6 +26,7 @@ from kohakuterrarium.core.config import (
     load_agent_config,
 )
 from kohakuterrarium.core.config_serde import pack_agent_config
+from kohakuterrarium.core.context_snapshot import ContextSnapshot
 from kohakuterrarium.core.environment import Environment
 from kohakuterrarium.core.events import TriggerEvent
 from kohakuterrarium.core.token_ledger import context_window, token_snapshot
@@ -132,6 +133,10 @@ class Creature:
     # ------------------------------------------------------------------
     # lifecycle
     # ------------------------------------------------------------------
+
+    def capture_context(self) -> ContextSnapshot:
+        """Capture the underlying agent's immutable context snapshot."""
+        return self.agent.capture_context()
 
     async def start(self, *, requested: bool = True) -> None:
         """Start the underlying agent.  Idempotent.

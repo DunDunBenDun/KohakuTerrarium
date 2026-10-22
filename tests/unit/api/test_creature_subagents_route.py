@@ -52,7 +52,7 @@ class TestReadConversation:
     def test_read_success(self, monkeypatch):
         captured: dict = {}
 
-        def fake_read(service, session_id, creature_id, *, job_id, name, run):
+        async def fake_read(service, session_id, creature_id, *, job_id, name, run):
             captured.update(
                 session_id=session_id,
                 creature_id=creature_id,
@@ -77,7 +77,7 @@ class TestReadConversation:
     def test_read_saved_by_name_and_run(self, monkeypatch):
         captured: dict = {}
 
-        def fake_read(service, session_id, creature_id, *, job_id, name, run):
+        async def fake_read(service, session_id, creature_id, *, job_id, name, run):
             captured.update(name=name, run=run, job_id=job_id)
             return {"name": name, "run": run, "messages": []}
 
@@ -91,7 +91,7 @@ class TestReadConversation:
         assert captured == {"name": "explore", "run": 2, "job_id": None}
 
     def test_read_unknown_run_is_404(self, monkeypatch):
-        def fake_read(*a, **k):
+        async def fake_read(*a, **k):
             raise NotFoundError("live sub-agent job 'x' not found")
 
         monkeypatch.setattr(sub_mod, "read_subagent_conversation", fake_read)
@@ -103,7 +103,7 @@ class TestReadConversation:
         assert resp.status_code == 404
 
     def test_read_missing_identifier_is_400(self, monkeypatch):
-        def fake_read(*a, **k):
+        async def fake_read(*a, **k):
             raise InvalidRequestError("provide job_id, or name (with optional run)")
 
         monkeypatch.setattr(sub_mod, "read_subagent_conversation", fake_read)
@@ -115,7 +115,7 @@ class TestReadConversation:
         # resolve_creature_id 404s before the accessor is ever called.
         called = {"n": 0}
 
-        def fake_read(*a, **k):
+        async def fake_read(*a, **k):
             called["n"] += 1
             return {}
 

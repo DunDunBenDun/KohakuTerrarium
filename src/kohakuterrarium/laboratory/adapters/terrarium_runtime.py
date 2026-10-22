@@ -531,6 +531,17 @@ class TerrariumRuntimeAdapter:
                 ok = bool(agent._promote_handle(msg.body["job_id"]))
                 return {"promoted": ok}
 
+            case "capture_context":
+                creature = self._require_hosted(msg.body["creature_id"])
+                return creature.capture_context().to_dict()
+
+            case "read_subagent_conversation" | "send_to_subagent":
+                body = dict(msg.body)
+                cid = body.pop("creature_id")
+                self._require_hosted(cid)
+                service = LocalTerrariumService(self._engine)
+                return await getattr(service, msg.type)(cid, **body)
+
             case "chat_history":
                 cid = msg.body["creature_id"]
                 self._require_hosted(cid)

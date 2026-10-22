@@ -16,6 +16,11 @@ import pytest
 from fastapi import WebSocketDisconnect
 
 from kohakuterrarium.api.routes.identity.grok import grok_usage
+from kohakuterrarium.errors import ConflictError
+from kohakuterrarium.studio.sessions.creature_subagents import (
+    read_subagent_conversation_async,
+    send_to_subagent,
+)
 from kohakuterrarium.bootstrap import agent_init as _agent_init_mod
 from kohakuterrarium.bootstrap import llm as _bootstrap_llm_mod
 from kohakuterrarium.laboratory.config import ClientConfig, HostConfig
@@ -85,6 +90,11 @@ pytestmark = pytest.mark.timeout(60)
 LAB_TOKEN = "lab-integration-token"
 
 
+class _ForkingLLM(ScriptedLLM):
+    def fork(self, **kwargs):
+        return _ForkingLLM(self.script)
+
+
 def _write_creature_config(root, name: str) -> str:
     cdir = root / f"creature_{name}"
     cdir.mkdir(parents=True, exist_ok=True)
@@ -150,7 +160,7 @@ def scripted_llm(monkeypatch):
     }
 
     def _create(config, llm=None):
-        return ScriptedLLM(holder["script"])
+        return _ForkingLLM(holder["script"])
 
     monkeypatch.setattr(_bootstrap_llm_mod, "create_llm_provider", _create)
     monkeypatch.setattr(_agent_init_mod, "create_llm_provider", _create)
@@ -434,6 +444,61 @@ class TestLaboratoryMultiNodeService:
             with pytest.raises(ValueError):
                 await service.chat_history_page(
                     alpha_info.creature_id, before="malformed"
+                )
+
+            snapshot = await service.capture_context(alpha.creature_id)
+            assert snapshot.messages == alpha.capture_context().messages
+            assert snapshot.provenance == w1_engine.capture_context(alpha).provenance
+            parent_messages = alpha.agent.controller.conversation.to_messages()
+            side = await service.execute_command(
+                alpha.creature_id, "btw", "private worker question"
+            )
+            assert side["error"] is None
+            side_id = side["data"]["job_id"]
+            await alpha.agent.subagent_manager.wait_for(side_id)
+            side_read = await read_subagent_conversation_async(
+                service, "cluster-display-id", alpha.creature_id, job_id=side_id
+            )
+            assert side_read["session_id"] == "cluster-display-id"
+            assert side_read["meta"]["audience"] == "user"
+            assert side_read["can_receive"] is True
+            assert "private worker question" in str(side_read["messages"])
+            sent = await send_to_subagent(
+                service,
+                alpha.graph_id,
+                alpha.creature_id,
+                "fork",
+                "private followup",
+                job_id=side_id,
+            )
+            assert sent["job_id"] == side_id
+            await alpha.agent.subagent_manager.wait_for(side_id)
+            saved = alpha.agent.session_store.find_subagent_run(
+                side_id, parent=alpha.agent.subagent_manager._parent_name
+            )
+            assert saved["meta"]["audience"] == "user"
+            alpha.agent.subagent_manager._jobs.pop(side_id)
+            restored = await service.read_subagent_conversation(
+                alpha.creature_id, job_id=side_id
+            )
+            assert restored["live"] is False
+            assert restored["can_receive"] is True
+            assert "private followup" in str(restored["messages"])
+            await service.send_to_subagent(
+                alpha.creature_id, "fork", "reopened followup", job_id=side_id
+            )
+            await alpha.agent.subagent_manager.wait_for(side_id)
+            assert alpha.agent.controller.conversation.to_messages() == parent_messages
+            task_id = await alpha.agent.subagent_manager.spawn(
+                "fork", "ordinary task", background=False
+            )
+            with pytest.raises(ConflictError):
+                await service.send_to_subagent(
+                    alpha.creature_id, "fork", "must not restart", job_id=task_id
+                )
+            with pytest.raises(KeyError):
+                await service.read_subagent_conversation(
+                    alpha.creature_id, job_id="absent"
                 )
 
             b_cfg = load_agent_config(cfg_bravo)

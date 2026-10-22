@@ -81,6 +81,7 @@ from kohakuterrarium.terrarium.service import (
     TerrariumService,
 )
 from kohakuterrarium.terrarium.service_dto import BranchMutationResult
+from kohakuterrarium.terrarium.subagent_service import MultiNodeSubagentServiceMixin
 from kohakuterrarium.terrarium.topology import (
     ChannelInfo,
     GraphTopology,
@@ -99,6 +100,7 @@ class CrossNodeNotSupportedError(RuntimeError):
 
 class MultiNodeTerrariumService(
     MultiNodeHistoryServiceMixin,
+    MultiNodeSubagentServiceMixin,
     MultiNodeDriveServiceMixin,
     MultiNodeRuntimeOptionsMixin,
     DriveServiceUnsupportedMixin,

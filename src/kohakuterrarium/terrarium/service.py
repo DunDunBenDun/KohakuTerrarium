@@ -39,6 +39,10 @@ from kohakuterrarium.session.raw_history import UserMessageSelector
 from kohakuterrarium.terrarium.drive.service import DriveServiceMixin
 from kohakuterrarium.terrarium.drive.service_protocol import DriveServiceProtocol
 from kohakuterrarium.terrarium.local_command_service import LocalCommandServiceMixin
+from kohakuterrarium.terrarium.subagent_service import (
+    LocalSubagentServiceMixin,
+    SubagentServiceProtocol,
+)
 from kohakuterrarium.terrarium.service_dto import (
     BranchMutationResult,
     CreatureInfo,
@@ -93,7 +97,9 @@ _normalize_command_args = normalize_command_args
 
 
 @runtime_checkable
-class TerrariumService(HistoryServiceProtocol, DriveServiceProtocol, Protocol):
+class TerrariumService(
+    HistoryServiceProtocol, DriveServiceProtocol, SubagentServiceProtocol, Protocol
+):
     """Operations Studio needs from a terrarium runtime.
 
     Method semantics match the underlying
@@ -464,7 +470,10 @@ class TerrariumService(HistoryServiceProtocol, DriveServiceProtocol, Protocol):
 
 
 class LocalTerrariumService(
-    LocalHistoryServiceMixin, LocalCommandServiceMixin, DriveServiceMixin
+    LocalHistoryServiceMixin,
+    LocalCommandServiceMixin,
+    LocalSubagentServiceMixin,
+    DriveServiceMixin,
 ):
     """Direct in-process implementation backed by a :class:`Terrarium`.
 
