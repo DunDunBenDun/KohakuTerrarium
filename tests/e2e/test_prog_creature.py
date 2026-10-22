@@ -60,6 +60,17 @@ pytestmark = pytest.mark.timeout(60)
 # ── deterministic collaborators ──────────────────────────────────
 
 
+class _CloseTrackedLLM(ScriptedLLM):
+    """Record cleanup of deterministic providers across model switches."""
+
+    def __init__(self, script):
+        super().__init__(script)
+        self.close_calls = 0
+
+    async def close(self):
+        self.close_calls += 1
+
+
 class _HashEmbedder(BaseEmbedder):
     """Deterministic hashed bag-of-words embedder.
 
@@ -178,7 +189,7 @@ def patched_llm(monkeypatch):
     holder: dict[str, list] = {"script": ["OK"]}
 
     def _fake_create(config, llm=None):
-        return ScriptedLLM(holder["script"])
+        return _CloseTrackedLLM(holder["script"])
 
     monkeypatch.setattr(_bootstrap_llm_mod, "create_llm_provider", _fake_create)
     monkeypatch.setattr(_agent_init_mod, "create_llm_provider", _fake_create)
@@ -430,6 +441,7 @@ class TestProgCreatureJourney:
             assert "switched-model reply" in out5
             assert agent.llm.call_count == 1  # fresh provider, first call
             assert original_llm.call_count == 6  # original untouched after switch
+            assert original_llm.close_calls == 0
 
             # ---- milestone 6: toggle a plugin ------------------------
             # ``budget`` is a catalog plugin — registered-but-disabled
@@ -623,6 +635,7 @@ class TestProgCreatureJourney:
 
         # Engine __aexit__ stopped the creature cleanly.
         assert creature.is_running is False
+        assert original_llm.close_calls == 1
 
         # ---- milestone 9: resume from the .kohakutr store ------------
         # Attach a real store and replay the recorded session into a

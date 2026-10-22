@@ -170,13 +170,24 @@ class AgentLifecycleMixin:
             if self.compact_manager
             else None
         )
-        if (
-            compact_llm is not None
-            and compact_llm is not self.llm
-            and hasattr(compact_llm, "close")
-        ):
-            await compact_llm.close()
-        await self.llm.close()
+        providers = [*getattr(self, "_retired_llms", []), compact_llm, self.llm]
+        seen: set[int] = set()
+        failed: list[Any] = []
+        first_error: Exception | None = None
+        for provider in providers:
+            if provider is None or id(provider) in seen:
+                continue
+            seen.add(id(provider))
+            if not hasattr(provider, "close"):
+                continue
+            try:
+                await provider.close()
+            except Exception as exc:
+                failed.append(provider)
+                first_error = first_error or exc
+        self._retired_llms = failed
+        if first_error is not None:
+            raise first_error
 
     def _finalize_inflight_jobs_for_stop(self) -> None:
         """Finalize each running job as interrupted exactly once during shutdown."""
