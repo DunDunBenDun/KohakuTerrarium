@@ -18,6 +18,7 @@ from kohakuterrarium.modules.plugin.base import BasePlugin
 from kohakuterrarium.modules.plugin.manager import PluginManager
 from kohakuterrarium.builtins.tool_catalog import get_builtin_tool
 from kohakuterrarium.core.config_types import AgentConfig
+from kohakuterrarium.core.context_snapshot import ContextSnapshot
 from kohakuterrarium.core.executor import Executor
 from kohakuterrarium.core.registry import Registry
 from kohakuterrarium.core.session import Session
@@ -46,6 +47,9 @@ class _FakeAgent(AgentInitMixin):
     def __init__(self, **attrs):
         for key, value in attrs.items():
             setattr(self, key, value)
+
+    def capture_context(self) -> ContextSnapshot:
+        return ContextSnapshot.from_dict({"messages": [], "provenance": {}})
 
 
 # ── _init_llm ───────────────────────────────────────────────────
@@ -341,6 +345,7 @@ class TestInitSubagents:
             config=AgentConfig(name="a"),
             registry=registry,
             executor=executor,
+            plugins=PluginManager(),
             llm=_FakeLLM(),
             _loader=None,
         )
@@ -349,6 +354,8 @@ class TestInitSubagents:
         # the parent executor for tool-context building.
         assert isinstance(fake.subagent_manager, SubAgentManager)
         assert fake.subagent_manager._parent_executor is executor
+        assert fake.subagent_manager._capture_context == fake.capture_context
+        assert fake.subagent_manager._parent_plugins is fake.plugins
         assert captured["registry"] is registry
 
 

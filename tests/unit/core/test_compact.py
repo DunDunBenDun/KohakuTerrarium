@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 
+from kohakuterrarium.core import compact as compact_module
 from kohakuterrarium.core.compact_branch import (
     compact_rule_from_event,
     compute_replaced_range,
@@ -1074,7 +1075,7 @@ class TestSpliceSafety:
             for m in conv.get_messages() + replacement.get_messages()
         )
 
-    async def test_inplace_tool_call_id_edit_aborts_splice(self):
+    async def test_inplace_tool_call_id_edit_aborts_splice(self, monkeypatch):
         # The fingerprint must cover the CANONICAL message dict — a
         # role=tool message's ``tool_call_id`` is provider-relevant but
         # absent from (role, content, tool_calls); mutating it in place
@@ -1085,10 +1086,29 @@ class TestSpliceSafety:
                 "id": "orig_1",
                 "type": "function",
                 "function": {"name": "bash", "arguments": "{}"},
-            }
+            },
+            {
+                "id": "unfinished_2",
+                "type": "function",
+                "function": {"name": "read", "arguments": "{}"},
+            },
         ]
         conv._messages.insert(
             3, create_message("tool", "r", tool_call_id="orig_1", name="bash")
+        )
+        conv._messages[3].metadata = {
+            "tool_result_phase": "pending",
+            "nested": {"source": "original"},
+        }
+        conv._messages[2].extra_fields = {"reasoning": {"signature": "original"}}
+        captured = []
+
+        def record_summary_input(messages):
+            captured.extend(messages)
+            return format_messages_for_summary(messages)
+
+        monkeypatch.setattr(
+            compact_module, "format_messages_for_summary", record_summary_input
         )
         router = _Router()
 
@@ -1098,7 +1118,28 @@ class TestSpliceSafety:
                 yield "S"
 
         mgr = _build_mgr(conversation=conv, llm=_MutatingLLM(), router=router)
+        boundary = mgr._compact_boundary(conv.get_messages())
+        originals = conv.get_messages()[1:boundary]
         await mgr._run_compact()
+        conv._messages[3].metadata["nested"]["source"] = "changed"
+        conv._messages[2].tool_calls[0]["function"]["arguments"] = '{"changed": true}'
+        conv._messages[2].extra_fields["reasoning"]["signature"] = "changed"
+        assert len(captured) == boundary - 1
+        assert all(
+            detached is not original for detached, original in zip(captured, originals)
+        )
+        assert [call["id"] for call in captured[1].tool_calls] == [
+            "orig_1",
+            "unfinished_2",
+        ]
+        assert captured[1].tool_calls[0]["function"]["arguments"] == "{}"
+        assert captured[1].extra_fields == {"reasoning": {"signature": "original"}}
+        assert captured[2].tool_call_id == "orig_1"
+        assert captured[2].name == "bash"
+        assert captured[2].metadata == {
+            "tool_result_phase": "pending",
+            "nested": {"source": "original"},
+        }
         assert mgr._compact_count == 0
         terminals = [
             (k, (m or {}).get("reason"))

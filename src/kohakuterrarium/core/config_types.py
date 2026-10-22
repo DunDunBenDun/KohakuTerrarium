@@ -153,6 +153,7 @@ class AgentConfig:
     triggers: list[TriggerConfig] = field(default_factory=list)
     tools: list[ToolConfigItem] = field(default_factory=list)
     subagents: list[SubAgentConfigItem] = field(default_factory=list)
+    fork_enabled: bool = True
     output: OutputConfig = field(default_factory=OutputConfig)
 
     # Provider-native tools to skip, e.g. ``["image_gen"]`` on Codex.

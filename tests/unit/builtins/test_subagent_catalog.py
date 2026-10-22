@@ -4,6 +4,7 @@ from contextlib import closing
 
 import pytest
 
+from kohakuterrarium.builtins import subagents as subagent_exports
 from kohakuterrarium.builtins.subagent_catalog import (
     get_builtin_subagent_config,
     list_builtin_subagents,
@@ -19,11 +20,32 @@ SERVICES = {"response", "summarize", "memory_read", "memory_write"}
 
 
 def test_catalog_contains_only_inspection_and_service_presets():
-    assert set(list_builtin_subagents()) == {"explore", "critic"} | SERVICES
+    assert set(list_builtin_subagents()) == {"explore", "critic", "fork"} | SERVICES
     for name in REMOVED:
         assert get_builtin_subagent_config(name) is None
     for name in SERVICES:
         assert get_builtin_subagent_config(name).name == name
+    fork = get_builtin_subagent_config("fork")
+    assert fork == subagent_exports.FORK_CONFIG
+    assert "FORK_CONFIG" in subagent_exports.__all__
+    assert fork.fork_context is True
+    assert fork.model == "inherit"
+    assert fork.budget_inherit is False
+    assert fork.tools == ["read", "glob", "grep", "tree"]
+    assert fork.can_modify is False
+    assert fork.interactive is False
+    assert fork.max_turns == 14
+    assert fork.timeout == 600
+    assert fork.default_plugins == []
+    assert fork.compact is None
+    assert fork.plugins == [
+        {
+            "name": "budget",
+            "options": {"turn_budget": [8, 12], "tool_call_budget": [24, 40]},
+        }
+    ]
+    for name in ("explore", "critic"):
+        assert get_builtin_subagent_config(name).fork_context is False
 
 
 @pytest.mark.parametrize("name", ["explore", "critic"])

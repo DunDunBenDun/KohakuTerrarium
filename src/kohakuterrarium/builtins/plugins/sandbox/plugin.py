@@ -52,6 +52,7 @@ class SandboxPlugin(BasePlugin):
     name = "sandbox"
     description = "Hard sandbox policy for file/network/subprocess execution"
     priority = 1
+    inherit_fork_policy = True
 
     @classmethod
     def option_schema(cls) -> dict[str, dict[str, Any]]:

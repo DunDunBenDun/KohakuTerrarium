@@ -274,6 +274,9 @@ class AgentInitMixin:
         )
         # Reuse the parent executor's working directory and safety guards.
         self.subagent_manager._parent_executor = self.executor
+        self.subagent_manager._host_agent = self
+        self.subagent_manager._parent_plugins = self.plugins
+        self.subagent_manager._capture_context = self.capture_context
 
         init_subagents(self.config, self.subagent_manager, self.registry, self._loader)
 
@@ -481,7 +484,11 @@ class AgentInitMixin:
                 self.output_router.notify_activity(
                     "command_result",
                     result.output,
-                    metadata={"source": source, "command": content},
+                    metadata={
+                        "source": source,
+                        "command": content,
+                        "data": result.data,
+                    },
                 )
             return None
         return result.output or content

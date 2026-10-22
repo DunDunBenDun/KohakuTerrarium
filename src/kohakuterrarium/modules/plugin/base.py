@@ -226,6 +226,7 @@ class BasePlugin:
 
     name: str = "unnamed"
     priority: int = 50
+    inherit_fork_policy: bool = False
 
     # An empty applicability filter enables the plugin for every context.
     applies_to: dict[str, list[str]] = {}
@@ -245,6 +246,15 @@ class BasePlugin:
                 )
         # Runtime option mutation is validated before derived state is refreshed.
         self.options: dict[str, Any] = {}
+
+    def fork_tool_policy(self) -> Callable[..., Any]:
+        """Return a validation-only pre-tool hook for one context-fork child.
+
+        Opted-in hooks must not mutate parent state or transform arguments.
+        Stateful policies override this factory to allocate child-private state.
+        Parent lifecycle and other hooks are not inherited.
+        """
+        return self.pre_tool_execute
 
     @classmethod
     def option_schema(cls) -> dict[str, dict[str, Any]]:

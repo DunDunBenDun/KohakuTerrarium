@@ -64,11 +64,13 @@ class TestCreateSubAgentConfigBuiltin:
                 "explore",
                 "critic",
                 "response",
+                "fork",
             }
             assert set(agent.registry.list_subagents()) == {
                 "explore",
                 "critic",
                 "response",
+                "fork",
             }
             for name in ("worker", "plan", "research", "coordinator"):
                 assert f"Skipping unavailable builtin sub-agent {name!r}" in caplog.text

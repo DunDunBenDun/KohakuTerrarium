@@ -9,6 +9,7 @@ from kohakuterrarium.builtins.user_commands.registry import (
 # Importing each command runs its registration decorator. Command modules depend
 # only on the lightweight registry, keeping this catalog outside their import path.
 from kohakuterrarium.builtins.user_commands.branch import BranchCommand
+from kohakuterrarium.builtins.user_commands.btw import BtwCommand
 from kohakuterrarium.builtins.user_commands.channels import ChannelsCommand
 from kohakuterrarium.builtins.user_commands.clear import ClearCommand
 from kohakuterrarium.builtins.user_commands.compact import CompactCommand
@@ -41,6 +42,7 @@ __all__ = [
     "get_builtin_user_command",
     "list_builtin_user_commands",
     "BranchCommand",
+    "BtwCommand",
     "ChannelsCommand",
     "ClearCommand",
     "CompactCommand",

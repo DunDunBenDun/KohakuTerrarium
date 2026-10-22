@@ -1118,8 +1118,7 @@ class TestPublicAccessors:
         agent = make_agent()
         agent.registry.register_tool(_EchoTool())
         assert "echo" in agent.tools
-        # The minimal config declares no sub-agents → list is empty.
-        assert agent.subagents == []
+        assert agent.subagents == ["fork"]
 
     async def test_conversation_history(self, make_agent):
         agent = make_agent(system_prompt="You are a test agent.")

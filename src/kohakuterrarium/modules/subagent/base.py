@@ -10,6 +10,8 @@ from kohakuterrarium.core.budget import (
     IterationBudget,
 )
 from kohakuterrarium.core.conversation import Conversation
+from kohakuterrarium.core.context_snapshot import ContextSnapshot
+from kohakuterrarium.llm.media_reference import session_media_scope
 from kohakuterrarium.core.executor import Executor
 from kohakuterrarium.core.registry import Registry
 from kohakuterrarium.core.tool_output import (
@@ -55,8 +57,16 @@ class SubAgent:
         tool_format: str | None = None,
         plugin_manager: PluginManager | None = None,
         compact_manager: Any = None,
+        snapshot: ContextSnapshot | None = None,
+        audience: str = "controller",
+        continuation: bool = False,
     ):
         self.config = config
+        self._snapshot = snapshot
+        self._audience = audience
+        self._continuation = continuation
+        self._task_text = ""
+        self._inherited_message_count = len(snapshot.messages) if snapshot else 0
         self.parent_registry = parent_registry
         self.llm = llm
         self.agent_path = agent_path
@@ -70,6 +80,9 @@ class SubAgent:
             self.compact_manager._agent_name = config.name
 
         self.on_tool_activity: Any = None
+        self.on_checkpoint: Any = None
+        self._fork_policy: Any = None
+        self._usage_offset: dict[str, int] = {}
 
         self._build_tool_context: Any = None
 
@@ -256,6 +269,8 @@ class SubAgent:
     async def _run_internal(self, task: str) -> SubAgentResult:
         """Internal run logic. Runs conversation loop with tool execution."""
         self._setup_conversation(task)
+        if self.on_checkpoint:
+            self.on_checkpoint()
 
         native_tool_schemas = None
         if self._is_native:
@@ -295,8 +310,17 @@ class SubAgent:
                 turn=self._turns,
             )
 
-            tool_calls, turn_output = await self._run_single_turn(native_tool_schemas)
+            with session_media_scope(
+                self._snapshot.provenance.get("session_path")
+                if self._snapshot
+                else None
+            ):
+                tool_calls, turn_output = await self._run_single_turn(
+                    native_tool_schemas
+                )
             output_parts.extend(turn_output)
+            if self.on_checkpoint:
+                self.on_checkpoint()
 
             if self._cancelled:
                 return SubAgentResult(
@@ -338,9 +362,18 @@ class SubAgent:
 
     def _setup_conversation(self, task: str) -> None:
         """Initialize conversation with system prompt and task."""
-        self.conversation = Conversation()
+        self._task_text = task
+        self.conversation = (
+            self._snapshot.conversation() if self._snapshot else Conversation()
+        )
         system_prompt = self._build_system_prompt()
-        self.conversation.append("system", system_prompt)
+        if self._snapshot:
+            if not self._continuation:
+                self.conversation.append(
+                    "user", "[Private context fork instructions]\n" + system_prompt
+                )
+        else:
+            self.conversation.append("system", system_prompt)
         self.conversation.append("user", task)
 
     async def _run_single_turn(
@@ -638,11 +671,10 @@ class SubAgent:
                     run=self._run_index,
                     meta={
                         "job_id": self._job_id,
-                        "task": (
-                            self.conversation.to_messages()[1].get("content", "")
-                            if len(self.conversation.to_messages()) > 1
-                            else ""
-                        ),
+                        "task": self._task_text,
+                        "audience": self._audience,
+                        "inherited_message_count": self._inherited_message_count,
+                        "source": self._snapshot.provenance if self._snapshot else None,
                         "turns": self._turns,
                         "tools_used": tools_used,
                         "success": error is None,
@@ -704,12 +736,16 @@ class SubAgent:
                     self._build_tool_context() if self._build_tool_context else None
                 )
                 # Per-call wrapping prevents child hooks from leaking onto shared tools.
-                exec_fn = tool.execute
+                exec_fn = (
+                    self._fork_policy.wrap(tool.execute, tool_name=tool_call.name)
+                    if self._fork_policy is not None
+                    else tool.execute
+                )
                 if self.plugins is not None:
                     exec_fn = self.plugins.wrap_method(
                         "pre_tool_execute",
                         "post_tool_execute",
-                        tool.execute,
+                        exec_fn,
                         input_kwarg="args",
                         extra_kwargs={"tool_name": tool_call.name},
                     )

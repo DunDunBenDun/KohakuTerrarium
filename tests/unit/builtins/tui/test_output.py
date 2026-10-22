@@ -80,6 +80,27 @@ class FakeTUI:
         )
 
 
+@pytest.mark.parametrize("kind", ["btw_started", "btw_result"])
+def test_btw_activity_keeps_parent_stream_state(kind):
+    tui = FakeTUI()
+    output = TUIOutput()
+    output._tui = tui
+    output._default_target = "alice"
+    output._turn_started = True
+    output.on_activity_with_metadata(
+        kind, "side answer", {"job_id": "side-1", "error": "failure"}
+    )
+    assert output._turn_started
+    assert tui.notices == [
+        {
+            "text": "side answer",
+            "command": "btw · side conversation side-1",
+            "error": True,
+            "target": "alice",
+        }
+    ]
+
+
 def test_command_result_activity_renders_notice():
     tui = FakeTUI()
     output = TUIOutput()

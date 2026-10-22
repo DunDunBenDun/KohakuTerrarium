@@ -21,6 +21,7 @@ from kohakuterrarium.core.agent_event_loop import AgentEventLoopMixin
 from kohakuterrarium.core.agent_extensions import AgentExtensionsMixin
 from kohakuterrarium.core.agent_handlers import AgentHandlersMixin
 from kohakuterrarium.core.agent_helpers import attach_session_helpers
+from kohakuterrarium.core.agent_input import drive_input
 from kohakuterrarium.core.agent_lifecycle import AgentLifecycleMixin
 from kohakuterrarium.core.agent_mcp import init_mcp, inject_mcp_tools_into_prompt
 from kohakuterrarium.core.agent_messages import AgentMessagesMixin
@@ -39,6 +40,7 @@ from kohakuterrarium.core.branch_continuation import (
 )
 from kohakuterrarium.core.compact import CompactConfig, CompactManager
 from kohakuterrarium.core.config import AgentConfig, load_agent_config
+from kohakuterrarium.core.context_snapshot import ContextSnapshot, capture_agent_context
 from kohakuterrarium.core.controller_plugins import register_plugin_and_package_commands
 from kohakuterrarium.core.event_inbox import EventInbox, TurnOutcome
 from kohakuterrarium.core.events import TriggerEvent, create_user_input_event
@@ -692,6 +694,10 @@ class Agent(
         logger.info("Task promoted via UI", job_id=job_id)
         return True
 
+    def capture_context(self) -> ContextSnapshot:
+        """Return an immutable snapshot of the current effective conversation."""
+        return capture_agent_context(self)
+
     async def run_forever(self) -> None:
         """Run the agent lifecycle and input loop until input exits."""
         await self.start()
@@ -726,49 +732,7 @@ class Agent(
                 await self._restore_triggers(pending_triggers)
                 self._pending_resume_triggers = None
 
-            # Fire startup trigger if configured
-            await self._fire_startup_trigger()
-            # Startup turn (if any) has now settled — release the
-            # restoration barrier so engine-side Drive reconciliation runs.
-            self._startup_settled.set()
-
-            idle_logged = False
-            while self._running:
-
-                # Get input (triggers fire _process_event directly via separate tasks)
-                if not idle_logged:
-                    logger.debug("Agent idle, waiting for input...")
-                    idle_logged = True
-
-                event = await self.input.get_input()
-
-                # Check for exit
-                if event is None:
-                    if (
-                        hasattr(self.input, "exit_requested")
-                        and self.input.exit_requested
-                    ):
-                        logger.info("Exit requested")
-                        break
-                    await asyncio.sleep(0.01)
-                    continue
-
-                idle_logged = False
-                # Log content length (handle multimodal)
-                if event.is_multimodal():
-                    content_len = len(event.get_text_content())
-                    content_info = f"{content_len} chars + {len(event.content)} parts"
-                else:
-                    content_len = len(event.content) if event.content else 0
-                    content_info = f"{content_len} chars"
-                logger.info(
-                    "Input received, processing event",
-                    event_type=event.type,
-                    content=content_info,
-                )
-
-                await self._process_event(event)
-                logger.debug("Event processing complete, returning to idle")
+            await drive_input(self, startup=True)
 
         except KeyboardInterrupt:
             logger.info("Interrupted")

@@ -82,7 +82,7 @@ class TestRichCliCancelOnSecondInput:
 
         cli_app.committer = _FakeCommitter()
         cli_app._invalidate = lambda: None
-        cli_app._handle_slash = lambda text: asyncio.sleep(0)  # type: ignore[assignment]
+        cli_app._handle_slash = lambda text, **kwargs: asyncio.sleep(0)  # type: ignore[assignment]
         return cli_app
 
     async def _stream_agent(self, tmp_path, monkeypatch):
@@ -423,7 +423,7 @@ class TestRichCliMidTurnInjectionFix:
         cli_app.committer = _FakeCommitter()
         cli_app._invalidate = lambda: None
         # Stub the slash dispatcher so we don't actually run /help.
-        cli_app._handle_slash = lambda text: asyncio.sleep(0)  # type: ignore[assignment]
+        cli_app._handle_slash = lambda text, **kwargs: asyncio.sleep(0)  # type: ignore[assignment]
 
         try:
             cli_app._handle_submit("/help")

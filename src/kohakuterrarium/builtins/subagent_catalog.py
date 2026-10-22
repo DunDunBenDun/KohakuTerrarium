@@ -9,6 +9,7 @@ import copy
 
 from kohakuterrarium.builtins.subagents.critic import CRITIC_CONFIG
 from kohakuterrarium.builtins.subagents.explore import EXPLORE_CONFIG
+from kohakuterrarium.builtins.subagents.fork import FORK_CONFIG
 from kohakuterrarium.builtins.subagents.memory_read import MEMORY_READ_CONFIG
 from kohakuterrarium.builtins.subagents.memory_write import MEMORY_WRITE_CONFIG
 from kohakuterrarium.builtins.subagents.response import RESPONSE_CONFIG
@@ -19,6 +20,7 @@ from kohakuterrarium.modules.subagent.config import SubAgentConfig
 _BUILTIN_CONFIGS: dict[str, SubAgentConfig] = {
     "critic": CRITIC_CONFIG,
     "explore": EXPLORE_CONFIG,
+    "fork": FORK_CONFIG,
     "memory_read": MEMORY_READ_CONFIG,
     "memory_write": MEMORY_WRITE_CONFIG,
     "response": RESPONSE_CONFIG,

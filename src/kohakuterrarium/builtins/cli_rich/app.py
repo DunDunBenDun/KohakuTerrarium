@@ -112,6 +112,7 @@ class RichCLIApp(AppPickersMixin, AppOutputMixin, AppMultiCreatureMixin, AppDriv
         self._pending_task: asyncio.Task | None = None
         self._pending_task_target: str | None = None
         self._turn_tasks: dict[str, asyncio.Task] = {}
+        self._side_command_tasks: set[asyncio.Task] = set()
         self._ctrl_c_armed = False
         self._ctrl_c_reset_task: asyncio.Task | None = None
         self._render_ticker_task: asyncio.Task | None = None
@@ -212,7 +213,7 @@ class RichCLIApp(AppPickersMixin, AppOutputMixin, AppMultiCreatureMixin, AppDriv
                     await self._ctrl_c_reset_task
                 except (asyncio.CancelledError, Exception):
                     pass
-            pending = set(self._turn_tasks.values())
+            pending = set(self._turn_tasks.values()) | self._side_command_tasks
             if self._pending_task:
                 pending.add(self._pending_task)
             for task in pending:
@@ -457,6 +458,11 @@ class RichCLIApp(AppPickersMixin, AppOutputMixin, AppMultiCreatureMixin, AppDriv
             spawn(self._mid_turn_inject(text, target_agent))
             return
 
+        if is_slash and self._command_is_busy_safe(text):
+            self._commit_user_message(text)
+            self._spawn_slash(text, noninterrupting=True)
+            return
+
         pending = self._focused_pending_task()
         focused_processing = self._focused_is_processing()
         if pending and not pending.done():
@@ -565,12 +571,28 @@ class RichCLIApp(AppPickersMixin, AppOutputMixin, AppMultiCreatureMixin, AppDriv
         self._pending_task_target = key
         return task
 
-    def _spawn_slash(self, text: str) -> asyncio.Task:
-        """Run a slash command and associate it with the focused creature."""
+    def _command_is_busy_safe(self, text: str) -> bool:
+        name, _ = parse_slash_command(text)
+        registry = self._command_registry
+        aliases = {
+            alias: command
+            for command in registry.values()
+            for alias in getattr(command, "aliases", [])
+        }
+        command = aliases.get(name, registry.get(name))
+        return bool(getattr(command, "safe_while_busy", False))
+
+    def _spawn_slash(self, text: str, *, noninterrupting: bool = False) -> asyncio.Task:
+        """Run a slash command without replacing a preserved foreground task."""
         target_id = self._focused_target_id()
-        task = spawn(self._handle_slash(text))
-        self._pending_task = task
-        self._pending_task_target = target_id
+        target = (target_id, self.agent, self.live_region)
+        task = spawn(self._handle_slash(text, target=target))
+        if noninterrupting:
+            self._side_command_tasks.add(task)
+            task.add_done_callback(self._side_command_tasks.discard)
+        else:
+            self._pending_task = task
+            self._pending_task_target = target_id
         return task
 
     async def _mid_turn_inject(self, text: str, target_agent: Any = None) -> None:
@@ -637,10 +659,12 @@ class RichCLIApp(AppPickersMixin, AppOutputMixin, AppMultiCreatureMixin, AppDriv
             pass
         self._invalidate()
 
-    async def _handle_slash(self, text: str) -> None:
-        target_id = self._focused_target_id()
-        target_agent = self.agent
-        target_region = self.live_region
+    async def _handle_slash(self, text: str, *, target: tuple | None = None) -> None:
+        target_id, target_agent, target_region = target or (
+            self._focused_target_id(),
+            self.agent,
+            self.live_region,
+        )
         name, args = parse_slash_command(text)
 
         # Bare /model is interactive; selectors use the command implementation.
@@ -692,7 +716,18 @@ class RichCLIApp(AppPickersMixin, AppOutputMixin, AppMultiCreatureMixin, AppDriv
         if result.error:
             self._commit_text(f"[red]{escape(str(result.error))}[/red]")
         elif result.output and result.consumed:
-            self._commit_text(escape(str(result.output)))
+            data = getattr(result, "data", None) or {}
+            if data.get("type") == "side_conversation":
+                job_id = data.get("job_id", "")
+                self.on_notification_event(
+                    {
+                        "title": f"btw · side conversation {job_id}",
+                        "text": str(result.output),
+                        "level": "info",
+                    }
+                )
+            else:
+                self._commit_text(escape(str(result.output)))
         elif result.output:
             self._spawn_agent_turn(
                 result.output,

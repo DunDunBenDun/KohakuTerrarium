@@ -20,6 +20,7 @@ from kohakuterrarium.core.compact_text import (
     extract_message_text,
     format_messages_for_summary,
 )
+from kohakuterrarium.core.context_snapshot import capture_context
 from kohakuterrarium.core.conversation_elide import elide_after_compact
 from kohakuterrarium.core.single_flight import SingleFlightDispatch, SingleFlightLease
 from kohakuterrarium.core.token_ledger import reset_context_tokens
@@ -298,7 +299,12 @@ class CompactManager:
                 terminal_sent = True
                 return
 
-            summary_input = format_messages_for_summary(compact_messages)
+            snapshot = capture_context(
+                conversation, before=boundary, provider_safe=False
+            )
+            summary_input = format_messages_for_summary(
+                snapshot.conversation().get_messages()[1:]
+            )
             expected_fingerprint = prefix_fingerprint(compact_messages)
             metadata = await capture_compact_metadata(
                 self._session_store,

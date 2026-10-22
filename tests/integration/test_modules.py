@@ -81,6 +81,7 @@ from kohakuterrarium.modules.tool.base import (
     ToolResult,
 )
 from kohakuterrarium.modules.tool.media_policy import MediaPolicy
+from kohakuterrarium.session.history import replay_conversation
 from kohakuterrarium.session.store import SessionStore
 from kohakuterrarium.modules.trigger.timer import TimerTrigger
 from kohakuterrarium.modules.user_command.base import (
@@ -112,6 +113,20 @@ pytestmark = pytest.mark.timeout(60)
 # These are ordinary subclasses of the public ``modules/`` base
 # classes — exactly what a framework user would write.
 # ─────────────────────────────────────────────────────────────────────
+
+
+class ForkableScriptedLLM(ScriptedLLM):
+    """Script isolated side runs without changing ScriptedLLM's shared behavior."""
+
+    def __init__(self, script, side_scripts):
+        super().__init__(script)
+        self.side_scripts = list(side_scripts)
+        self.children = []
+
+    def fork(self):
+        child = ScriptedLLM(self.side_scripts.pop(0))
+        self.children.append(child)
+        return child
 
 
 class RecordingTool(BaseTool):
@@ -423,7 +438,7 @@ def llm_box(monkeypatch):
     box = _Box()
 
     def _fake_create(config, llm=None):
-        return ScriptedLLM(box.script)
+        return llm if llm is not None else ScriptedLLM(box.script)
 
     monkeypatch.setattr(_bootstrap_llm, "create_llm_provider", _fake_create)
     monkeypatch.setattr(_agent_init, "create_llm_provider", _fake_create)
@@ -574,6 +589,7 @@ class TestModulesIntegration:
             "recorder",
             "skill",
             "visibility_probe",
+            "fork",
         }
         assert mgr.enable("tool_visibility") is True
         assert [s.name for s in agent.controller._get_native_tool_schemas()] == [
@@ -1182,6 +1198,114 @@ class TestModulesIntegration:
             assert "## Available Sub-Agents" in sa_prompt
             assert "- worker: Background worker sub-agent." in sa_prompt
             assert not hasattr(agent.subagent_manager, "_max_depth")
+
+            side_llm = ForkableScriptedLLM(
+                ["parent remains independent"],
+                [
+                    ["Side finding: logs are healthy."],
+                    ["Follow-up: inspect timestamps."],
+                ],
+            )
+            agent.llm = agent.controller.llm = agent.subagent_manager.llm = side_llm
+            before = agent.capture_context()
+            replay_before = replay_conversation(store.get_events("modules_agent"))
+            assert "worker finished" in str(replay_before)
+            command = agent.list_user_commands()["btw"]
+            context = UserCommandContext(agent=agent)
+            started = await command.execute("What did the logs show?", context)
+            assert started.success, started.error
+            side_id = started.data["job_id"]
+            side_result = await agent.subagent_manager.wait_for(side_id)
+            assert side_result.output == "Side finding: logs are healthy."
+            assert side_llm.call_count == 0
+            assert side_llm.children[0].call_count == 1
+            assert "logs look healthy" in str(side_llm.children[0].call_log)
+            assert agent.capture_context().messages == before.messages
+            assert (
+                agent._recorder.activities_of_type("btw_result")[-1].detail
+                == side_result.output
+            )
+
+            opened = await command.execute(f"--open {side_id}", context)
+            assert "What did the logs show?" in opened.output
+            assert "Side finding: logs are healthy." in opened.output
+            assert "dispatch the worker" not in opened.output
+            assert "Private context fork instructions" not in opened.output
+            saved_side = store.find_subagent_run(side_id, parent="modules_agent")
+            assert saved_side["meta"]["source"] == before.provenance
+            assert saved_side["meta"]["audience"] == "user"
+            assert saved_side["meta"]["inherited_message_count"] == len(before.messages)
+
+            follow = await command.execute(
+                f"--continue {side_id} What should I inspect next?", context
+            )
+            assert follow.success, follow.error
+            assert (
+                await agent.subagent_manager.wait_for(side_id)
+            ).output == "Follow-up: inspect timestamps."
+            assert "Side finding: logs are healthy." in str(
+                side_llm.children[1].call_log
+            )
+            assert agent.capture_context().messages == before.messages
+            assert side_llm.call_count == 0
+            assert [
+                (row["run"], row["job_id"])
+                for row in store.list_subagent_runs(parent="modules_agent", name="fork")
+            ] == [(saved_side["run"], side_id)]
+
+            resumed_llm = ForkableScriptedLLM(
+                ["unused"], [["Reopened: timestamps checked."]]
+            )
+            resumed = await Agent.build(
+                AgentConfig(name="modules_agent"),
+                llm=resumed_llm,
+                io="headless",
+                pwd=tmp_path,
+            )
+            resumed.attach_session_store(store)
+            try:
+                resumed_command = resumed.list_user_commands()["btw"]
+                resumed_context = UserCommandContext(agent=resumed)
+                reopened = await resumed_command.execute(
+                    f"--open {side_id}", resumed_context
+                )
+                assert "What did the logs show?" in reopened.output
+                assert "Follow-up: inspect timestamps." in reopened.output
+                assert "dispatch the worker" not in reopened.output
+                continuation = await resumed_command.execute(
+                    f"--continue {side_id} Check timestamps", resumed_context
+                )
+                assert continuation.success, continuation.error
+                assert (
+                    await resumed.subagent_manager.wait_for(side_id)
+                ).output == "Reopened: timestamps checked."
+                assert resumed_llm.call_count == 0
+                assert "Follow-up: inspect timestamps." in str(
+                    resumed_llm.children[0].call_log
+                )
+                assert (
+                    store.find_subagent_run(side_id, parent="modules_agent")["run"]
+                    == saved_side["run"]
+                )
+                assert (
+                    store.find_subagent_run(side_id, parent="modules_agent")["meta"][
+                        "source"
+                    ]
+                    == before.provenance
+                )
+            finally:
+                await resumed.stop()
+            replay_after = replay_conversation(store.get_events("modules_agent"))
+            assert replay_after == replay_before
+            for side_text in (
+                "What did the logs show?",
+                "Side finding: logs are healthy.",
+                "What should I inspect next?",
+                "Follow-up: inspect timestamps.",
+                "Check timestamps",
+                "Reopened: timestamps checked.",
+            ):
+                assert side_text not in str(replay_after)
         finally:
             await agent.stop()
             store.close()

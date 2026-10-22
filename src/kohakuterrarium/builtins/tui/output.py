@@ -437,6 +437,13 @@ class TUIOutput(BaseOutputModule):
         t = self._target
 
         match activity_type:
+            case "btw_started" | "btw_result":
+                self._tui.add_system_notice(
+                    name_detail or str(metadata.get("error") or ""),
+                    command=f"btw · side conversation {job_id}",
+                    error=bool(metadata.get("error")),
+                    target=t,
+                )
             case "tool_start":
                 self._handle_tool_start(name, rest, args, job_id, t, metadata)
             case "tool_done":

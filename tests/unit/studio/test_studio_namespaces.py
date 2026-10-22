@@ -75,6 +75,7 @@ class TestCatalogBuiltins:
         subs = s.catalog.builtins.list("subagents")
         names = {x["name"] for x in subs}
         assert names == {
+            "fork",
             "explore",
             "critic",
             "response",

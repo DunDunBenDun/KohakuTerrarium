@@ -104,7 +104,15 @@ def init_subagents(
     loader: ModuleLoader | None,
 ) -> None:
     """Register sub-agents with both execution and parsing registries."""
+    if config.fork_enabled and not any(
+        item.name == "fork" for item in config.subagents
+    ):
+        fork = get_builtin_subagent_config("fork")
+        subagent_manager.register(fork)
+        registry.register_subagent(fork.name, fork)
     for subagent_item in config.subagents:
+        if subagent_item.name == "fork" and not config.fork_enabled:
+            continue
         sa_config = create_subagent_config(subagent_item, loader)
         if sa_config:
             subagent_manager.register(sa_config)

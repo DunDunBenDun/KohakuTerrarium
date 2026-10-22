@@ -57,6 +57,7 @@ from kohakuterrarium.modules.trigger.callable import CallableTriggerTool
 from kohakuterrarium.modules.trigger.channel import ChannelTrigger
 from kohakuterrarium.modules.trigger.context import ContextUpdateTrigger
 from kohakuterrarium.modules.trigger.timer import TimerTrigger
+from kohakuterrarium.modules.user_command.base import UserCommandContext
 from kohakuterrarium.testing.llm import ScriptedLLM, ScriptEntry
 
 # ── the only seam: the LLM provider factory ──────────────────────
@@ -97,7 +98,7 @@ def scripted_llm(monkeypatch):
 
 
 def _write_minimal_creature(root: Path) -> Path:
-    """A bare creature: no tools, no plugins, no sub-agents, no triggers.
+    """A bare creature with no explicitly configured modules.
 
     Exercises the happy path where each factory still has to produce a
     *real* component even when the config declares nothing for it.
@@ -353,8 +354,8 @@ class TestBootstrapIntegration:
         plugin_names = {p["name"] for p in agent.plugins.list_plugins()}
         assert "tagplugin" not in plugin_names
 
-        # bootstrap.subagents -> manager built, no sub-agents registered.
-        assert agent.subagent_manager.list_subagents() == []
+        assert agent.subagent_manager.list_subagents() == ["fork"]
+        assert agent.registry.list_subagents() == ["fork"]
 
         # _init_output -> router with a real default output module.
         assert agent.output_router is not None
@@ -389,6 +390,44 @@ class TestBootstrapIntegration:
             and "minimal creature" in str(m.get("content", ""))
             for m in history
         )
+
+        for enabled in (False, True):
+            (config_dir / "config.yaml").write_text(
+                f"name: minimal\nfork_enabled: {str(enabled).lower()}\n"
+                'controller: {model: gpt-4-test, api_key_env: ""}\n'
+                "input: {type: none}\n"
+                "subagents:\n"
+                "  - name: fork\n"
+                "    type: builtin\n"
+                "    timeout: 300\n",
+                encoding="utf-8",
+            )
+            configured = Agent.from_path(str(config_dir))
+            try:
+                assert configured.subagents == (["fork"] if enabled else [])
+                if enabled:
+                    assert configured.subagent_manager.get_config("fork").timeout == 300
+                else:
+                    with pytest.raises(ValueError, match="disabled"):
+                        await configured.subagent_manager.start_side("side question")
+                    rejected = await configured.list_user_commands()["btw"].execute(
+                        "side question", UserCommandContext(agent=configured)
+                    )
+                    assert not rejected.success
+                    assert "disabled" in rejected.error
+                    assert "fork" not in {
+                        schema.name
+                        for schema in configured.controller._get_native_tool_schemas()
+                    }
+                    with pytest.raises(ValueError, match="not registered"):
+                        await configured.subagent_manager.spawn("fork", "side question")
+                    assert configured.llm.call_count == 0
+                await configured.start()
+                result = await configured.run("Still runnable after fork configuration")
+                assert result.text == "Hello from the minimal creature."
+                assert configured.llm.call_count == 1
+            finally:
+                await configured.stop()
 
         # ── bootstrap.llm pure-logic + error paths. The provider
         #    constructors need a live backend, but the config-extraction
@@ -514,8 +553,14 @@ class TestBootstrapIntegration:
             "explore",
             "critic",
             "scout",
+            "fork",
         }
-        assert set(agent.registry.list_subagents()) == {"explore", "critic", "scout"}
+        assert set(agent.registry.list_subagents()) == {
+            "explore",
+            "critic",
+            "scout",
+            "fork",
+        }
         for removed in ("worker", "plan", "research", "coordinator"):
             assert f"Skipping unavailable builtin sub-agent {removed!r}" in caplog.text
         critic_cfg = agent.registry.get_subagent("critic")

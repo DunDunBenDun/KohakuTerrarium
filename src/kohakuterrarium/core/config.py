@@ -418,6 +418,7 @@ def _construct_agent_config(
         triggers=[_parse_trigger_config(t) for t in config_data.get("triggers", [])],
         tools=[_parse_tool_config(t) for t in config_data.get("tools", [])],
         subagents=[_parse_subagent_config(s) for s in config_data.get("subagents", [])],
+        fork_enabled=config_data.get("fork_enabled", True),
         output=_parse_output_config(config_data.get("output")),
         compact=config_data.get("compact"),
         startup_trigger=config_data.get("startup_trigger"),

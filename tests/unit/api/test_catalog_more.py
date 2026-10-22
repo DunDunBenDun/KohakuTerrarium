@@ -76,6 +76,7 @@ class TestBuiltinsRoute:
         assert r.status_code == 200
         names = {e["name"] for e in r.json()}
         assert {
+            "fork",
             "critic",
             "explore",
             "summarize",

@@ -233,6 +233,16 @@ class RichCLIOutput(BaseOutputModule):
         name_from_label = self._extract_name(detail)
         args_preview = self._extract_args_preview(metadata)
 
+        if activity_type in ("btw_started", "btw_result"):
+            self.app.on_notification_event(
+                {
+                    "title": f"btw · side conversation {job_id}",
+                    "text": detail or str(metadata.get("error") or ""),
+                    "level": "error" if metadata.get("error") else "info",
+                }
+            )
+            return
+
         if activity_type == "command_result":
             self.app.on_notification_event(
                 {

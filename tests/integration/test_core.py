@@ -1982,8 +1982,7 @@ class TestCoreIntegration:
 
         async with Terrarium() as engine:
             await engine.add_creature(creature)
-            # Both registered sub-agents are visible on the property.
-            assert set(agent.subagents) == {"explore", "planner"}
+            assert set(agent.subagents) == {"fork", "explore", "planner"}
 
             # A background sub-agent's result drives a follow-up turn that can
             # land after chat() returns, so the summary is read once settled.

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import kohakuterrarium as kt
+from kohakuterrarium.core.context_snapshot import ContextSnapshot
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
@@ -36,6 +37,7 @@ def test_root_import_defers_public_implementation_modules():
     assert "kohakuterrarium.studio" not in loaded
     assert "kohakuterrarium.terrarium" not in loaded
     assert "kohakuterrarium.core.agent" not in loaded
+    assert "kohakuterrarium.core.context_snapshot" not in loaded
     assert "kohakuterrarium.validate" not in loaded
     assert "kohakuterrarium.session.store" not in loaded
 
@@ -58,6 +60,9 @@ def test_root_exports_resolve_to_real_objects_and_cache():
     from kohakuterrarium.studio.studio import Studio
     from kohakuterrarium.terrarium.engine import Terrarium
 
+    assert kt.ContextSnapshot is ContextSnapshot
+    assert kt.__dict__["ContextSnapshot"] is ContextSnapshot
+    assert "ContextSnapshot" in kt.__all__
     assert kt.Agent is Agent
     assert kt.Studio is Studio
     assert kt.Terrarium is Terrarium

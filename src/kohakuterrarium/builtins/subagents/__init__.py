@@ -8,6 +8,7 @@ _SUBAGENT_EXPORTS = {
     "list_builtin_subagents": "kohakuterrarium.builtins.subagent_catalog",
     "CRITIC_CONFIG": "kohakuterrarium.builtins.subagents.critic",
     "EXPLORE_CONFIG": "kohakuterrarium.builtins.subagents.explore",
+    "FORK_CONFIG": "kohakuterrarium.builtins.subagents.fork",
     "MEMORY_READ_CONFIG": "kohakuterrarium.builtins.subagents.memory_read",
     "MEMORY_WRITE_CONFIG": "kohakuterrarium.builtins.subagents.memory_write",
     "RESPONSE_CONFIG": "kohakuterrarium.builtins.subagents.response",
