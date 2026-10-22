@@ -152,7 +152,9 @@ def prepare_image_urls(
                     ("file://", "/api/sessions/")
                 ):
                     raise MediaReferenceError(
-                        f"Required local media is unavailable: {url}"
+                        f"Required local media is unavailable: {url}. "
+                        "Restore the file or supply the image again. For missing "
+                        "images in completed older turns, inspect /repair-images."
                     )
                 if resolved is not url and resolved != url:
                     new_content.append(

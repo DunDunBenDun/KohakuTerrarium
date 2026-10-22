@@ -55,6 +55,7 @@ from kohakuterrarium.core.config_types import (
     OutputConfig,
 )
 from kohakuterrarium.builtins.user_commands.clear import ClearCommand
+from kohakuterrarium.builtins.user_commands.repair_images import RepairImagesCommand
 from kohakuterrarium.core.conversation import Conversation
 from kohakuterrarium.core.events import (
     EventType,
@@ -187,6 +188,15 @@ class _AssistantMediaLLM(ScriptedLLM):
             yield f"streamed_{version}"
         else:
             yield "continued"
+
+
+class _LegacyImageReadTool(ReadTool):
+    """Emit the live image reference used by pre-snapshot read results."""
+
+    async def execute(self, args, context=None):
+        result = await super().execute(args, context)
+        result.output[1].url = Path(args["path"]).as_uri()
+        return result
 
 
 class _EchoTool(BaseTool):
@@ -2425,6 +2435,70 @@ class TestCoreIntegration:
         persistence onto a creature.
         """
         from kohakuterrarium.session.store import SessionStore
+
+        legacy_image = tmp_path / "legacy-image.png"
+        Image.new("RGB", (2, 2), "red").save(legacy_image)
+        repair_command = RepairImagesCommand()
+        async with Terrarium(session_dir=tmp_path / "repair-media") as engine:
+            legacy = await engine.add_creature(
+                AgentConfig(
+                    name="legacy_media", system_prompt="plain", tool_format="native"
+                ),
+                llm=_HistoryReplayLLM(
+                    True,
+                    plan=[
+                        [
+                            NativeToolCall(
+                                "read_old",
+                                "read",
+                                json.dumps({"path": str(legacy_image)}),
+                            )
+                        ],
+                        "image seen",
+                        "continued",
+                    ],
+                ),
+                tools=[_LegacyImageReadTool()],
+                pwd=tmp_path,
+                io="headless",
+                start=True,
+            )
+            assert (await legacy.run("read the image")).ok
+            legacy_image.unlink()
+            failed = await legacy.run("continue", raise_on_error=False)
+            assert not failed.ok and "Required local media is unavailable" in str(
+                failed.error
+            )
+            context = UserCommandContext(agent=legacy.agent)
+            preview = await repair_command.execute("", context)
+            assert preview.success and legacy_image.as_uri() in preview.output
+            assert "message" in preview.output and "turn 1" in preview.output
+            raw_events = legacy.agent.session_store.get_events("legacy_media")
+            repaired = await repair_command.execute(
+                preview.data["action_args"], context
+            )
+            assert repaired.success and "Replaced 1" in repaired.output
+            assert legacy.agent.session_store.get_events("legacy_media") == raw_events
+            assert "No repairable" in (await repair_command.execute("", context)).output
+            repaired_path = legacy.agent.session_store.path
+
+        restored, repaired_store = resume_agent(
+            repaired_path, io_mode="plain", llm=ScriptedLLM(["continued after repair"])
+        )
+        try:
+            await restored.start()
+            for prompt in ("continue after reopen", "continue again"):
+                assert (await restored.run(prompt)).text == "continued after repair"
+            assert "Historical image unavailable" in str(restored.llm.last_messages)
+            assert not any(
+                part.get("type") == "image_url"
+                for message in restored.llm.last_messages
+                if isinstance(message.get("content"), list)
+                for part in message["content"]
+            )
+        finally:
+            await restored.stop()
+            repaired_store.close()
 
         creature, recorder = make_creature(
             script=[

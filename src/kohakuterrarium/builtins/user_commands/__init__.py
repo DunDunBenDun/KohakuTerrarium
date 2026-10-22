@@ -23,6 +23,7 @@ from kohakuterrarium.builtins.user_commands.model import ModelCommand
 from kohakuterrarium.builtins.user_commands.module import ModuleCommand
 from kohakuterrarium.builtins.user_commands.plugin import PluginCommand
 from kohakuterrarium.builtins.user_commands.regen import RegenCommand
+from kohakuterrarium.builtins.user_commands.repair_images import RepairImagesCommand
 from kohakuterrarium.builtins.user_commands.scratchpad import ScratchpadCommand
 from kohakuterrarium.builtins.user_commands.settings import SettingsCommand
 from kohakuterrarium.builtins.user_commands.skill import SkillUserCommand
@@ -54,6 +55,7 @@ __all__ = [
     "ModuleCommand",
     "PluginCommand",
     "RegenCommand",
+    "RepairImagesCommand",
     "ScratchpadCommand",
     "SettingsCommand",
     "SkillUserCommand",
