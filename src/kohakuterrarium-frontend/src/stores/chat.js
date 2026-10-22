@@ -2705,6 +2705,7 @@ const _chatStoreOptions = {
     async prepareSlashSend(tab, content) {
       const parsed = _parseSlashCommand(content)
       if (!parsed || !tab || tab.type === "channel") return null
+      if (parsed.command === "btw") return { type: "command", name: "btw" }
       const marked = this._slashTargetByTab[tab.key]
       if (marked && marked.name.toLowerCase() === parsed.command) return marked
       const inventory = await this.loadCommandInventory(tab)
@@ -2744,11 +2745,11 @@ const _chatStoreOptions = {
           slashCommand.command === "goal" &&
           (!target ||
             (target.type === "command" && target.name.toLowerCase() === slashCommand.command))
-        if (isGoal) {
+        if (isGoal || slashCommand.command === "btw") {
           const result = await terrariumAPI.executeCreatureCommand(
             this._instanceGraphId || this._instanceId,
             tabInfo?.creature || tab,
-            "goal",
+            slashCommand.command,
             slashCommand.args,
           )
           this.invalidateCommandInventory(tab)

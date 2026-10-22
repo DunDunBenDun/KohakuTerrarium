@@ -1,5 +1,6 @@
 <template>
   <div class="h-full flex flex-col bg-warm-100 dark:bg-[#211F1D]" :class="showFocusRing ? 'ring-1 ring-inset ring-iolite/40 dark:ring-iolite-light/30' : ''" @focusin="onGroupFocus" @mousedown="onGroupFocus">
+    <SideConversationHost :side="sideConversation" />
     <div role="tablist" class="flex items-end gap-0 px-4 pt-2 shrink-0 min-w-0">
       <div class="flex items-end overflow-x-auto scrollbar-none min-w-0">
         <div v-for="tab in viewTabs" :key="tab" role="tab" tabindex="0" :draggable="!!props.groupId" :aria-selected="viewActiveTab === tab" class="relative flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium cursor-pointer select-none rounded-t-lg -mb-px transition-colors shrink-0" :class="viewActiveTab === tab ? 'bg-white dark:bg-warm-900 text-warm-800 dark:text-warm-200 border border-warm-200 dark:border-warm-700 border-b-white dark:border-b-warm-900 z-10' : 'text-warm-400 dark:text-warm-500 hover:text-warm-600 dark:hover:text-warm-400 border border-transparent'" @click="onTabClick(tab)" @keydown.enter="onTabClick(tab)" @keydown.space.prevent="onTabClick(tab)" @dragstart="onTabDragStart($event, tab)" @dragend="onTabDragEnd" @dragover.prevent="onTabStripDragOver($event)" @drop.prevent.stop="onTabStripDrop($event, viewTabs.indexOf(tab))">
@@ -90,7 +91,7 @@
           <span class="text-amber-shadow dark:text-amber-light">{{ t("chat.pendingBanner", { count: pendingCount }) }}</span>
           <button class="ml-auto text-amber hover:underline" @click="scrollToPending">{{ t("chat.pendingShow") }}</button>
         </div>
-        <ChatComposer ref="composerEl" v-model="inputText" v-model:attachments="attachments" :processing="viewProcessing" :compact-mode="isCompact" :managed-submit="true" :max-attachment-bytes="MAX_ATTACHMENT_BYTES" :max-image-bytes="MAX_IMAGE_BYTES" :placeholder="inputPlaceholder" :labels="composerLabels" aria-autocomplete="list" :aria-expanded="slashMenuOpen" aria-controls="slash-command-menu" :aria-activedescendant="slashActiveDescendant" input-role="combobox" :attachment-transform="transformAttachment" @update:attachments="onComposerAttachmentsChanged" @submit="send" @interrupt="chat.interrupt(viewActiveTab)" @compact="triggerCompact" @clear="triggerClear" @error="onAttachmentError" @input="onInputChanged" @keydown="onInputKeydown" @focus="onInputFocus" @blur="onInputBlur" @drag-state="dragOver = $event">
+        <ChatComposer ref="composerEl" v-model="inputText" v-model:attachments="attachments" :processing="viewProcessing && !btwDraft" :compact-mode="isCompact" :managed-submit="true" :max-attachment-bytes="MAX_ATTACHMENT_BYTES" :max-image-bytes="MAX_IMAGE_BYTES" :placeholder="inputPlaceholder" :labels="composerLabels" aria-autocomplete="list" :aria-expanded="slashMenuOpen" aria-controls="slash-command-menu" :aria-activedescendant="slashActiveDescendant" input-role="combobox" :attachment-transform="transformAttachment" @update:attachments="onComposerAttachmentsChanged" @submit="send" @interrupt="chat.interrupt(viewActiveTab)" @compact="triggerCompact" @clear="triggerClear" @error="onAttachmentError" @input="onInputChanged" @keydown="onInputKeydown" @focus="onInputFocus" @blur="onInputBlur" @drag-state="dragOver = $event">
           <template #suggestions><SlashCommandMenu :open="slashMenuOpen" :loading="slashInventoryLoading" :error="slashInventoryError" :entries="slashMatches" :selected-index="slashSelectedIndex" @choose="chooseSlashEntry" @select-index="slashSelectedIndex = $event" /></template>
           <template #attachment-icon="{ attachment }"><span :class="attachment.kind === 'image' ? 'i-carbon-image text-iolite dark:text-iolite-light' : 'i-carbon-document text-aquamarine'" /></template>
           <template #remove-icon><span class="i-carbon-close" /></template>
@@ -112,6 +113,8 @@ import { ElMessage, ElMessageBox } from "element-plus"
 
 import { h, inject, provide } from "vue"
 
+import SideConversationHost from "@/components/subagents/SideConversationHost.vue"
+import { useSideConversation } from "@/composables/useSideConversation"
 import StatusDot from "@/components/common/StatusDot.vue"
 import ChatMessage from "@/components/chat/ChatMessage.vue"
 import { ChatComposer, ChatTranscriptSection } from "@kohakuterrarium/chat-ui"
@@ -162,6 +165,7 @@ let fileDragDepth = 0
 const viewGroup = computed(() => (props.groupId ? chat.groups?.[props.groupId] || null : null))
 const viewTabs = computed(() => (viewGroup.value ? viewGroup.value.tabs : chat.tabs))
 const viewActiveTab = computed(() => (viewGroup.value ? viewGroup.value.activeTab : chat.activeTab))
+const sideConversation = useSideConversation({ chat, tabKey: viewActiveTab })
 const viewInstanceId = computed(() => props.instance?.id || chat._instanceId || null)
 const scrollScope = computed(() => ({
   groupId: props.groupId,
@@ -179,6 +183,7 @@ watch(
   },
   { immediate: true },
 )
+const btwDraft = computed(() => !viewActiveTab.value?.startsWith("ch:") && _parseSlashCommand(inputText.value)?.command === "btw")
 const viewProcessing = computed(() => {
   const t = viewActiveTab.value
   return t ? !!chat.processingByTab[t] : false
@@ -881,6 +886,11 @@ async function send() {
     }
     const sendText = inputText.value
     const sendAttachments = [...attachments.value]
+    const isBtw = !sendTab.startsWith("ch:") && _parseSlashCommand(sendText)?.command === "btw"
+    if (isBtw && sendAttachments.length) {
+      ElMessage.error("/btw accepts text only. Remove attachments first.")
+      return
+    }
     const sendComposerRevision = composerRevision.value
     const sendInstanceGeneration = chat._instanceGeneration
     const sendInstanceId = chat._instanceId
@@ -947,7 +957,7 @@ async function send() {
       resultContext,
     }
     const commandContextChanged = () => chat._instanceGeneration !== sendInstanceGeneration || chat._instanceId !== sendInstanceId || chat._instanceGraphId !== sendGraphId || props.instance?.id !== sendPropInstanceId || props.instance?.graph_id !== sendPropGraphId
-    const canUseHttp = sendTab.startsWith("ch:") || inlineCommand
+    const canUseHttp = sendTab.startsWith("ch:") || inlineCommand || isBtw
     const stillOwnsComposer = () => composerRevision.value === sendComposerRevision && chat._instanceGeneration === sendInstanceGeneration && chat._instanceId === sendInstanceId && chat._instanceGraphId === sendGraphId && props.instance?.id === sendPropInstanceId && props.instance?.graph_id === sendPropGraphId && chat.activeTab === sendTab && viewActiveTab.value === sendTab && inputText.value === sendText && attachments.value.length === sendAttachments.length && attachments.value.every((attachment, index) => attachment === sendAttachments[index])
     if (!canUseHttp && chat._ws?.readyState !== WebSocket.OPEN) {
       if (inlineCommand) chat.releaseCommandResultContext(sendTab, resultContext)
@@ -966,10 +976,12 @@ async function send() {
         persistDraft()
         nextTick(() => composerEl.value?.resetHeight())
       }
-      isNearBottom.value = true // force scroll after send
-      leaveHistory()
-      scrollScheduler.resume()
-      scheduleScrollToBottom(true)
+      if (!isBtw) {
+        isNearBottom.value = true
+        leaveHistory()
+        scrollScheduler.resume()
+        scheduleScrollToBottom(true)
+      }
       if (canUseHttp) outcome = await outcomePromise
       if (outcome?.handled === "command") {
         if (commandContextChanged()) {
@@ -1031,6 +1043,10 @@ async function surfaceCommandResult(response, target = null) {
     return
   }
   const payload = response.data
+  if (payload?.type === "side_conversation") {
+    sideConversation.open(payload, target)
+    return
+  }
   if (payload && payload.type === "notify" && payload.message) {
     const level = payload.level || "info"
     const fn = ElMessage[level] || ElMessage.info

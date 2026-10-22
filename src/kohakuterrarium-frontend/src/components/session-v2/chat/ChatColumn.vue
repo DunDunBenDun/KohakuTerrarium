@@ -1,5 +1,6 @@
 <template>
   <div class="kt-v2-chatcol h-full min-h-0 flex flex-col relative" :class="{ 'ring-2 ring-inset ring-iolite/30': dragOver }" :style="reserveRight ? { paddingRight: '23.5rem' } : null" @dragenter="onDragEnter" @dragleave="onDragLeave" @dragover="onDragOver" @drop="onDrop">
+    <SideConversationHost :side="composer.sideConversation" />
     <ConversationStrip v-if="strip" :narrow="narrow" />
     <div v-if="empty" class="flex-1 min-h-0 flex flex-col items-center justify-end pb-6 px-4">
       <ChatEmptyHero :tab-key="tabKey" />
@@ -24,6 +25,7 @@
 <script setup>
 import { computed, h, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from "vue"
 
+import SideConversationHost from "@/components/subagents/SideConversationHost.vue"
 import ChatMessage from "@/components/chat/ChatMessage.vue"
 import ChatComposerBar from "@/components/session-v2/chat/ChatComposerBar.vue"
 import ChatEmptyHero from "@/components/session-v2/chat/ChatEmptyHero.vue"

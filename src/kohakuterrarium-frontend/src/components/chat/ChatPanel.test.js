@@ -914,6 +914,43 @@ describe("ChatPanel command results", () => {
       content: "Goals: drive_1",
       data: { type: "list", title: "Goals" },
     })
+    let completeBtw
+    command.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          completeBtw = resolve
+        }),
+    )
+    vi.spyOn(terrariumAPI, "getSubagentConversation").mockResolvedValue({
+      meta: { audience: "user", inherited_message_count: 0 },
+      can_receive: true,
+      messages: [{ role: "assistant", content: "side answer" }],
+    })
+    chat.processingByTab.kohaku = true
+    await wrapper.find("textarea").setValue("/btw separate question")
+    await wrapper.find('button[aria-label="Send message"]').trigger("click")
+    await flushPromises()
+    expect(command).toHaveBeenLastCalledWith("graph_1", "kohaku", "btw", "separate question")
+    chat.tabs.push("other")
+    chat.activeTab = "other"
+    const sideResult = { data: { type: "side_conversation", job_id: "side-job", name: "fork" } }
+    completeBtw(sideResult)
+    await flushPromises()
+    expect(wrapper.find('[data-test="side-conversation-modal"]').exists()).toBe(false)
+    expect(chat.messagesByTab.kohaku).toHaveLength(1)
+    expect(chat.processingByTab.kohaku).toBe(true)
+    chat.activeTab = "kohaku"
+    await flushPromises()
+    expect(wrapper.find('[data-test="side-conversation-modal"]').exists()).toBe(true)
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }))
+    await flushPromises()
+    expect(wrapper.find('[data-test="side-conversation-modal"]').exists()).toBe(false)
+    command.mockResolvedValueOnce(sideResult)
+    await wrapper.get('button[title="/btw --open side-job"]').trigger("click")
+    await flushPromises()
+    expect(command).toHaveBeenLastCalledWith("graph_1", "kohaku", "btw", "--open side-job")
+    expect(wrapper.find('[data-test="side-conversation-modal"]').exists()).toBe(true)
+    expect(chat.messagesByTab.kohaku).toHaveLength(1)
     command.mockRestore()
   })
 
