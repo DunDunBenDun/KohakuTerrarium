@@ -586,6 +586,17 @@ No `.kohakutr` is created. This also disables compaction's ability to recover pr
 
 ## Troubleshooting
 
+- **An old missing image blocks every request.** Run `/repair-images` to inspect
+  missing local `file://` images in completed turns older than the current turn.
+  Confirm using the displayed `/repair-images --apply <confirmation>` command
+  (or the web confirmation). Each selected image becomes a text note explaining
+  that its contents are unavailable. The repair saves only the active branch's
+  context; recorded events and sibling branches remain intact. Retry your message
+  afterwards. A changed context or file set requires a fresh preview. Current,
+  interrupted, unfinished, and unidentified turns remain protected, as do session
+  artifacts, remote URLs, and files that fail for reasons other than absence.
+  Restore or reattach those images instead. No surviving file is migrated or read
+  into a new snapshot. Repair requires an idle creature with a persisted session.
 - **Compaction runs forever / OOMs.** The compact model is the same heavy controller model. Set `compact_model` to something cheap (`gpt-4o-mini`, `claude-haiku`).
 - **Resume errors with `tool not registered`.** The creature config changed (a tool was removed) but the conversation still references it. Manually edit `config.yaml` to re-add the tool, or start a fresh session.
 - **`kt resume` can't find a session I just saw.** Sessions are resolved by prefix against filenames in `~/.kohakuterrarium/sessions/`. If you renamed the file or moved it, pass the full path.
