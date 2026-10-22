@@ -24,7 +24,7 @@
 import { defineStore } from "pinia"
 import { computed, getCurrentInstance, ref } from "vue"
 
-import { injectScope, registerScopeDisposer } from "@/composables/useScope"
+import { injectScope, disposeScopeStore, registerScopeDisposer } from "@/composables/useScope"
 import { mediaSourceUrl } from "@/utils/artifacts"
 import { readLocalJsonPref, writeLocalJsonPref } from "@/utils/uiPrefs"
 
@@ -465,9 +465,9 @@ function _factoryFor(scope) {
     useFn = defineStore(`canvas:${key}`, _setupCanvasStore(key))
     _canvasFactories.set(key, useFn)
     if (scope) {
-      registerScopeDisposer(scope, () => {
+      registerScopeDisposer(scope, (pinia) => {
         try {
-          useFn().$dispose?.()
+          disposeScopeStore(useFn(pinia), pinia)
         } catch {
           /* swallow */
         }
