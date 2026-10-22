@@ -98,6 +98,19 @@ Fire-and-forget callbacks (no return value, no ability to modify):
 
 You can also declare a cheap static gate with `applies_to = {agent_names: [...], model_patterns: [...]}`.
 
+### Persistent plugin state
+
+Use `context.get_state(key)` and `context.set_state(key, value)` for state that
+should survive session resume. New writes are private to the creature name and
+plugin name, even when several creatures share one session store. Without an
+attached store, reads return `None` and writes are no-ops.
+
+Older sessions used one record per plugin and key for the whole store. If no
+creature-scoped record exists, reads still return that legacy value. New writes
+leave the legacy record unchanged; an explicitly saved `None` also overrides
+the fallback. Legacy records do not identify their original owner, so values
+already overwritten by another creature cannot be recovered automatically.
+
 ## Example: tool guard
 
 Blocks dangerous shell commands.

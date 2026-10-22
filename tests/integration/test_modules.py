@@ -27,6 +27,7 @@ Each method runs ONE complete workflow end-to-end.
 
 import asyncio
 import json
+from contextlib import closing
 from typing import Any
 
 import httpx
@@ -764,6 +765,28 @@ class TestModulesIntegration:
         # Explicit teardown fires on_unload.
         await mgr.unload_all()
         assert plugin.lifecycle[-1] == "on_unload"
+
+        # Contexts from two real creatures share a store but keep plugin state private.
+        other = make_agent()
+        other.config.name = "other_modules_agent"
+        state_path = tmp_path / "plugin-state.kohakutr"
+        with closing(SessionStore(state_path)) as store:
+            agent.attach_session_store(store)
+            other.attach_session_store(store)
+            peer = RuntimePluginContext(
+                agent_name=other.config.name,
+                _host_agent=other,
+                _plugin_name=ctx._plugin_name,
+            )
+            ctx.set_state("turns", 7)
+            peer.set_state("turns", 2)
+            assert ctx.get_state("turns") == 7
+            assert peer.get_state("turns") == 2
+        with closing(SessionStore(state_path)) as reopened:
+            agent.attach_session_store(reopened)
+            other.attach_session_store(reopened)
+            assert ctx.get_state("turns") == 7
+            assert peer.get_state("turns") == 2
 
     async def test_trigger_produces_event_and_drives_a_turn(self, make_agent):
         """trigger protocol — a real :class:`TimerTrigger` is hot-plugged

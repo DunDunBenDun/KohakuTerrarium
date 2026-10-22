@@ -3,6 +3,7 @@
 Hooks run linearly by priority; callbacks observe lifecycle events without nesting.
 """
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -185,19 +186,30 @@ class PluginContext:
             controller._pending_injections = queue
         queue.append({"role": role, "content": content})
 
+    def _state_key(self, key: str) -> str:
+        if not self.agent_name:
+            return f"plugin:{self._plugin_name}:{key}"
+        identity = json.dumps(
+            [self.agent_name, self._plugin_name, key], separators=(",", ":")
+        )
+        return f"plugin-state:{identity}"
+
     def get_state(self, key: str) -> Any:
-        """Read plugin-scoped state from session store."""
+        """Read creature/plugin state, falling back to an unmigrated legacy key."""
         store = self.session_store
         if store is None:
             return None
-        return store.state.get(f"plugin:{self._plugin_name}:{key}")
+        try:
+            return store.state[self._state_key(key)]
+        except KeyError:
+            return store.state.get(f"plugin:{self._plugin_name}:{key}")
 
     def set_state(self, key: str, value: Any) -> None:
-        """Write plugin-scoped state to session store."""
+        """Write private creature/plugin state without changing legacy records."""
         store = self.session_store
         if store is None:
             return
-        store.state[f"plugin:{self._plugin_name}:{key}"] = value
+        store.state[self._state_key(key)] = value
 
     def spawn_child_agent(
         self,
