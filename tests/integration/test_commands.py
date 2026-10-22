@@ -54,10 +54,22 @@ from kohakuterrarium.core.config_types import (
 )
 from kohakuterrarium.core.events import create_user_input_event
 from kohakuterrarium.core.job import JobResult, JobState, JobStatus, JobType
-from kohakuterrarium.modules.tool.base import BaseTool, ExecutionMode, ToolResult
+from kohakuterrarium.llm.message import content_display_text
+from kohakuterrarium.skills.discovery import load_skill_from_path
 from kohakuterrarium.skills.registry import Skill
 from kohakuterrarium.testing.llm import ScriptedLLM
 from kohakuterrarium.testing.output import OutputRecorder
+from kohakuterrarium.builtins.tools.info import InfoTool
+from kohakuterrarium.builtins.tools.read import ReadTool
+from kohakuterrarium.builtins.tools.skill import SkillTool
+from kohakuterrarium.builtins.user_commands.skill import SkillUserCommand
+from kohakuterrarium.modules.tool.base import (
+    BaseTool,
+    ExecutionMode,
+    ToolContext,
+    ToolResult,
+)
+from kohakuterrarium.modules.user_command.base import UserCommandContext
 
 pytestmark = pytest.mark.timeout(60)
 
@@ -240,7 +252,9 @@ class TestCommandsIntegration:
         )
         assert "## Behavior" in joined
 
-    async def test_info_resolves_subagent_and_unknown(self, make_agent) -> None:
+    async def test_info_resolves_subagent_and_unknown(
+        self, make_agent, tmp_path
+    ) -> None:
         """One turn: a builtin *subagent* skill resolves, a runtime
         *procedural skill* resolves through the SkillRegistry fallback,
         and an unknown name produces a clean ``Not found`` command error
@@ -302,6 +316,76 @@ class TestCommandsIntegration:
         # Two successes (subagent skill + procedural skill) and one error.
         assert activity_kinds.count("command_done") == 2
         assert activity_kinds.count("command_error") == 1
+
+        skill_dir = tmp_path / "global skills" / "resource-probe"
+        skill_dir.mkdir(parents=True)
+        source = skill_dir / "SKILL.md"
+        source.write_text(
+            "---\nname: resource-probe\ndescription: Read bundled references\n---\n"
+            "Read YYY.md from this skill. Read project.txt from the project.\n",
+            encoding="utf-8",
+        )
+        (skill_dir / "YYY.md").write_text("bundled reference", encoding="utf-8")
+        (tmp_path / "YYY.md").write_text("project decoy", encoding="utf-8")
+        (tmp_path / "project.txt").write_text("project input", encoding="utf-8")
+        skill = load_skill_from_path(source, origin="user")
+        agent.skills.add(skill)
+        context = ToolContext(
+            agent_name=agent.config.name,
+            agent=agent,
+            session=agent.session,
+            working_dir=tmp_path,
+        )
+        outputs = []
+        for tool in (SkillTool(), InfoTool()):
+            response = await tool.execute({"name": skill.name}, context)
+            assert not response.error
+            outputs.append(response.output)
+        shown = await SkillUserCommand().execute(
+            "show resource-probe", UserCommandContext(agent=agent)
+        )
+        assert not shown.error
+        outputs.append(shown.output)
+        slash = await agent._try_slash_command_text("/resource-probe user arguments")
+        assert not slash.error and not slash.consumed
+        outputs.append(slash.output)
+
+        for output in outputs:
+            directory_lines = [
+                line
+                for line in output.splitlines()
+                if line.startswith("Skill directory: ")
+            ]
+            assert directory_lines == [f"Skill directory: {skill_dir.resolve()}"]
+            resource = (
+                Path(directory_lines[0].removeprefix("Skill directory: ")) / "YYY.md"
+            )
+            read = await ReadTool().execute({"path": str(resource)}, context)
+            assert not read.error
+            assert "bundled reference" in read.output
+            assert "project decoy" not in read.output
+            assert "explicit project-relative paths" in output
+        project = await ReadTool().execute({"path": "project.txt"}, context)
+        assert "project input" in project.output
+        assert context.working_dir == tmp_path
+
+        agent.controller.llm = ScriptedLLM(
+            [
+                "[/skill]resource-probe[skill/]\n[/info]resource-probe[info/]\nDone.",
+                "Reference acknowledged.",
+            ]
+        )
+        await _run_turn(agent, slash.output)
+        assert (
+            _assistant_text(agent).count(f"Skill directory: {skill_dir.resolve()}") == 1
+        )
+        await _run_turn(agent, "Keep using the reference")
+        history = "\n".join(
+            content_display_text(message.get("content"))
+            for message in agent.controller.llm.last_messages
+        )
+        assert history.count(f"Skill directory: {skill_dir.resolve()}") == 3
+        assert "user arguments" in history
 
     async def test_info_resolution_order(self, make_agent) -> None:
         """Resolution order: packaged builtin skill beats the tool class;
