@@ -229,8 +229,8 @@ explicitly under `tools:`; the explicit entry wins over auto-injection.
 
 ```yaml
 subagents:
-  - plan
-  - worker
+  - explore
+  - critic
   - name: my_critic
     type: custom
     module: ./subagents/critic.py
@@ -241,12 +241,28 @@ subagents:
       budget_inherit: true
 ```
 
-Built-ins: `worker`, `coordinator`, `explore`, `plan`, `research`, `critic`, `response`, `memory_read`, `memory_write`, `summarize`.
+Builtins: `explore`, `critic`, `fork`, `response`, `memory_read`, `memory_write`,
+`summarize`. Older builtin entries `worker`, `coordinator`, `plan`, and `research`
+warn and are skipped; use custom sub-agents or graph creatures for that work.
 
-Builtin sub-agents already opt into `default_plugins: ["auto-compact"]` and the
-unified `budget` plugin with minimal options: `turn_budget: [40, 60]`,
-`tool_call_budget: [75, 100]`, and no walltime limit. Override the `budget`
-plugin's `options` inline if a specialist needs a larger budget.
+`fork` is added automatically, even without a `subagents:` list. It uses a
+snapshot of parent context for bounded side tasks, while `explore` and `critic`
+still start fresh. An explicit entry named `fork` overrides the implicit preset.
+To disable context forks and reject `/btw` side questions:
+
+```yaml
+fork_enabled: false
+```
+
+The three inspection helpers use `read`, `glob`, `grep`, and `tree`, with
+soft/hard model-call budgets of 8/12, tool-call budgets of 24/40, an absolute
+14-call cap, a 600-second timeout, and no automatic compaction. `fork` inherits
+the parent's model through an isolated provider; providers unable to create a
+distinct instance are rejected. Service presets retain
+`default_plugins: ["auto-compact"]`, `turn_budget: [40, 60]`, and
+`tool_call_budget: [75, 100]`. See [Sub-agents](sub-agents.md) for limits and the
+`/btw` open/continue/stop commands. The existing `/fork` session-copy command is
+unchanged.
 
 For YAML-only specialists, use `type: custom` without `module`/`config` and put
 `SubAgentConfig` fields directly in the entry:

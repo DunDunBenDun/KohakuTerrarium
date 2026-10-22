@@ -166,6 +166,40 @@ finally:
     await agent.stop()
 ```
 
+### Context snapshots
+
+- `agent.capture_context() -> ContextSnapshot` is **synchronous**: do not await it.
+  It captures a detached, immutable snapshot of the effective conversation branch
+  without changing the parent. Unfinished native-tool groups are excluded so the
+  captured prefix is provider-valid.
+- `creature.capture_context() -> ContextSnapshot` and
+  `engine.capture_context(creature) -> ContextSnapshot` synchronously forward to
+  that creature's agent.
+- `ContextSnapshot` is exported from `kohakuterrarium`. `messages` and
+  `provenance` return fresh decoded containers; mutating them cannot mutate the
+  snapshot or parent. `to_dict()` / `ContextSnapshot.from_dict(data)` provide a
+  serializable round trip. `conversation()` creates a separate `Conversation`.
+- Provenance records the source agent, branch path/view, turn and branch IDs,
+  event watermark, session path, and model where available. It describes where
+  the context came from; it is not a live reference to the source branch.
+
+```python
+from kohakuterrarium import ContextSnapshot
+
+snapshot = agent.capture_context()
+serialized = snapshot.to_dict()
+restored = ContextSnapshot.from_dict(serialized)
+side_context = restored.conversation()
+```
+
+Snapshot capture itself makes no LLM call. The default-on `fork` sub-agent uses
+one when dispatched, then requires an isolated provider (a distinct instance
+returned by `fork()` for the inherited model). Providers without that isolation
+are rejected rather than reused. `/btw` exposes a retained user-audience side
+conversation; neither its question nor answer enters the parent's LLM input.
+See the [sub-agent guide](../guides/sub-agents.md#context-forks-and-btw) for
+limits, continuation, persistence, and `fork_enabled: false`.
+
 ### `@kt.tool` / `FunctionTool`
 
 Module: `kohakuterrarium.modules.tool.function` (re-exported as

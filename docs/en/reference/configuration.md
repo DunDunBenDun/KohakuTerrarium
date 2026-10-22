@@ -57,7 +57,8 @@ order: `config.yaml` → `config.yml` → `config.json` → `config.toml`.
 | `input` | dict | `{}` | no | Input module config. See [Input](#input). |
 | `output` | dict | `{}` | no | Output module config. See [Output](#output). |
 | `tools` | list | `[]` | no | Tool entries. See [Tools](#tools). |
-| `subagents` | list | `[]` | no | Sub-agent entries. See [Sub-agents](#sub-agents). |
+| `subagents` | list | `[]` | no | Explicit sub-agent entries; an entry named `fork` overrides the implicit preset. See [Sub-agents](#sub-agents). |
+| `fork_enabled` | bool | `true` | no | Register the builtin context `fork` by default. `false` disables it and rejects `/btw`; does not change the `/fork` session-copy command. |
 | `triggers` | list | `[]` | no | Trigger entries. See [Triggers](#triggers). |
 | `compact` | dict | `null` | no | Compaction config. See [Compact](#compact). |
 | `startup_trigger` | dict | `null` | no | One-shot trigger fired on start. `{prompt: "..."}`. |
@@ -419,14 +420,14 @@ tools:
 | `tools` | list[str] | `[]` | Tools this sub-agent is allowed to use. |
 | `can_modify` | bool | `false` | Whether the sub-agent can perform mutating operations. |
 | `interactive` | bool | `false` | Stay alive across turns; receive context updates. |
-| `options` | dict | `{}` | Sub-agent-specific options. Inline sub-agent config fields such as `notify_controller_on_background_complete` are read from here when supported by `SubAgentConfig`. |
+| Additional inline fields | varies | varies | YAML fields such as `model`, `timeout`, `max_turns`, `plugins`, and `notify_controller_on_background_complete` are collected into `SubAgentConfigItem.options` by the loader. Put them directly on the entry, not under a nested YAML `options:` block. |
 
 Shorthand: a bare string is treated as a builtin sub-agent name:
 
 ```yaml
 subagents:
   - explore
-  - worker
+  - critic
 ```
 
 YAML-only inline config: use `type: custom` without `module`/`config`; unknown
@@ -446,9 +447,15 @@ subagents:
           tool_call_budget: [75, 100]
 ```
 
-Builtin sub-agents already declare `default_plugins: ["auto-compact"]` and a
-`budget` plugin with `turn_budget: [40, 60]`, `tool_call_budget: [75, 100]`,
-and no `walltime_budget`.
+The inspection presets `explore`, `critic`, and `fork` use only `read`, `glob`,
+`grep`, and `tree`, with `turn_budget: [8, 12]`, `tool_call_budget: [24, 40]`,
+`max_turns: 14`, `timeout: 600`, and no automatic compaction. `fork` is registered
+without an explicit entry unless `fork_enabled: false`; it captures the parent's
+effective context and defaults to `model: inherit` with an isolated provider.
+`explore` and `critic` still start with fresh task contexts. Service presets
+(`response`, `summarize`, `memory_read`, `memory_write`) retain
+`default_plugins: ["auto-compact"]`, `turn_budget: [40, 60]`, and
+`tool_call_budget: [75, 100]`. See the [sub-agent guide](../guides/sub-agents.md).
 
 Background completion note:
 
@@ -459,7 +466,7 @@ tools:
     notify_controller_on_background_complete: false
 
 subagents:
-  - name: research
+  - name: explore
     type: builtin
     notify_controller_on_background_complete: false
 ```

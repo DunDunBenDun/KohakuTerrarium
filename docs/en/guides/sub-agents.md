@@ -9,10 +9,11 @@ tags:
 
 # Sub-agents
 
-Sub-agents are private vertical delegation inside a creature. Each task run starts
-with its own prompt and the supplied task, not the parent's conversation.
-Lightweight helpers inspect; graph creatures own substantial delegated work.
-The parent retains planning and decisions.
+Sub-agents are private vertical delegation inside a creature. `explore` and
+`critic` start with their own prompt and the supplied task, not the parent's
+conversation. The default-on `fork` helper instead inherits a detached snapshot
+of the parent's effective context. Lightweight helpers inspect; graph creatures
+own substantial delegated work. The parent retains planning and decisions.
 
 ## Builtin task helpers
 
@@ -67,21 +68,103 @@ agent returned normally, not that its findings establish complete coverage.
 subagents:
   - name: explore
     type: builtin
-    options:
-      max_turns: 18
-      timeout: 900
-      model: my-fast-profile
-      plugins:
-        - name: budget
-          options:
-            turn_budget: [10, 16]
-            tool_call_budget: [30, 50]
+    max_turns: 18
+    timeout: 900
+    model: my-fast-profile
+    plugins:
+      - name: budget
+        options:
+          turn_budget: [10, 16]
+          tool_call_budget: [30, 50]
 ```
 
 The `plugins` list replaces the preset's list. Keep a reporting allowance between
 the hard model-call budget and the absolute loop cap. `timeout` is the whole-run
 deadline. The budget plugin's current `walltime_budget` measures time around LLM
 calls, not total elapsed time including tools; do not use it as a whole-run timer.
+
+## Context forks and `/btw`
+
+Every creature registers the builtin `fork` helper by default, even with no
+`subagents:` list. It answers a bounded side task using a snapshot of the
+parent's current effective branch. This does **not** change `explore` or `critic`:
+continue supplying self-contained questions and evidence to those fresh-context
+helpers.
+
+`fork` has only `read`, `glob`, `grep`, and `tree`: no writes, shell, graph
+coordination, or recursive delegation. It inherits the parent's model but must
+use an isolated provider instance. A provider without a working `fork()` that
+returns a distinct instance is rejected; KT never silently reuses the parent's
+provider. The preset has 8/12 soft/hard model-call and 24/40 tool-call budgets,
+an absolute 14-call cap, a 600-second timeout, no automatic compaction, and no
+shared parent iteration budget. Inherited tool inventories are background, not
+capabilities granted to the child.
+
+Context forks inherit only opted-in parent pre-tool authorization guards, checked
+against the live enabled/applicable plugins after child argument transformations.
+This is not blanket plugin inheritance: parent budgets, context hooks, and
+lifecycle hooks are not shared. The builtin `sandbox` and `permgate` opt in;
+new permission approvals made in a child remain private to that child. Custom
+plugins opt in with `inherit_fork_policy = True` and may implement
+`fork_tool_policy()` to create a validation-only guard with child-private state.
+If parent policy identities or options change during an async approval, the tool
+invocation is blocked for retry. These are known-tool authorization guards, not
+an OS sandbox or automatic containment of arbitrary custom tool code.
+See [fork authorization policies](../reference/plugin-hooks.md#fork-authorization-policies).
+
+Disable the builtin and user side conversations at the creature level:
+
+```yaml
+fork_enabled: false
+```
+
+An explicit `subagents:` entry named `fork` overrides the implicit preset when
+forks are enabled. For example, to override its timeout:
+
+```yaml
+fork_enabled: true                 # default; can be omitted
+subagents:
+  - name: fork
+    type: builtin
+    timeout: 300
+```
+
+### Ask without interrupting the main task
+
+```text
+/btw What does the error we just saw mean?
+/btw --continue JOB_ID Which file should I inspect next?
+/btw --open JOB_ID
+/btw --stop JOB_ID
+```
+
+`/btw` is a user-facing side conversation, not a new parent turn. Neither its
+question nor its answer becomes parent LLM input, and completion does not wake
+the parent controller. It can run while the parent is busy. A follow-up continues
+the side transcript, not a fresh snapshot of the parent's latest conversation;
+wait for completion or stop the side run before continuing it.
+
+With session persistence enabled, the transcript is saved under the same
+sub-agent run and job ID, with source provenance and an inherited-message count.
+You can reopen and continue it after restoring the session. The visible side
+transcript hides the inherited parent prefix; hiding is a presentation boundary,
+not redaction from the saved context. `/btw --stop` stops the side job, not the
+parent. With `fork_enabled: false`, `/btw` returns a disabled error.
+
+The web side-conversation panel shows the same “KohakUwUing…” indicator as main
+chat while that side run is active, including follow-ups. Display names start
+with a short label from the side question instead of the internal job ID. For
+persisted Studio sessions, the existing session-summary settings also refine
+side titles in the background using only the side exchanges, never the inherited
+parent history. Disabling summaries keeps the initial label; reopening and
+follow-ups preserve the title. Job IDs remain available for command addressing.
+
+The controller can also call `fork` as a normal sub-agent; that result follows
+normal controller result routing. This is distinct from user-audience `/btw`.
+The existing **`/fork` command is unchanged**: it copies a session into a separate
+`.kohakutr` file, rather than starting a context-aware side task.
+
+For programmatic snapshots, see [`Agent.capture_context()`](../reference/python.md#context-snapshots).
 
 ## Service presets
 
@@ -163,5 +246,5 @@ subagents:
 ```
 
 The `auto-compact` pack selects `compact.auto`; a `compact` block configures the
-manager. The two inspection presets do not select either by default. Prefer a
+manager. The three inspection presets do not select either by default. Prefer a
 smaller question or a graph creature over silently extending a lightweight run.

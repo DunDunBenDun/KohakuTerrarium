@@ -95,6 +95,34 @@ filtering is left to prompt contributions.
 
 ---
 
+### Fork authorization policies
+
+Parent plugins do not automatically become child plugins. A plugin may set
+`inherit_fork_policy = True` (default: `False`) to contribute a pre-tool
+authorization guard to context forks. `fork_tool_policy() -> Callable[..., Any]`
+returns the guard for one child; the default implementation returns
+`self.pre_tool_execute`. Stateful policies should override this factory to
+allocate child-private state rather than mutate the parent.
+
+The runtime checks the parent's live enabled/applicable plugin set for every
+child tool call, after the child's argument transformations. The guard receives
+`args`, `tool_name`, and execution keyword arguments and may be sync or async.
+Return `None` or unchanged arguments to allow execution; raise `PluginBlockError`
+to deny it. Argument mutations, rewritten return values, and unexpected guard
+exceptions block the call. These inherited guards authorize, not transform.
+If the applicable parent policy identities or options change while an async
+approval is pending, the invocation is blocked with a retry error rather than
+executed under stale approval. Parent budget accounting, context hooks, and
+lifecycle hooks are not inherited.
+
+The builtin `sandbox` and `permgate` opt in. `permgate` honors live parent policy
+and existing parent approvals, but new approvals granted within a fork stay
+private to that child; they do not approve tools for the parent or sibling forks.
+This is an authorization contract for tools the guards understand, not an
+OS-level sandbox or automatic containment of arbitrary custom tool code.
+
+---
+
 ## Sub-agent hooks
 
 | Hook | Signature | Fired when | Return semantics |

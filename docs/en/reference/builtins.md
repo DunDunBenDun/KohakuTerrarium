@@ -245,7 +245,13 @@ config under `subagents:` by name.
 The task helpers `explore` and `critic` use inspection-only tools and the `budget`
 plugin: soft/hard model calls `8/12`, tool calls `24/40`, absolute `max_turns: 14`,
 and whole-run `timeout: 600` seconds. Neither opts into automatic compaction.
-The parent supplies context and diffs; graph creatures own substantial work.
+The default-on `fork` uses the same limits and tools but starts from a detached
+parent context snapshot and inherits the model through an isolated provider.
+Providers unable to return a distinct instance from `fork()` are rejected, not
+shared. `fork_enabled: false` disables context forks and `/btw`; an explicit
+`subagents:` entry named `fork` overrides the default when enabled.
+For `explore` and `critic`, the parent still supplies context and diffs; graph
+creatures own substantial work.
 Service presets retain their existing `auto-compact` opt-in and `40/60` turn,
 `75/100` tool-call budgets.
 
@@ -257,6 +263,7 @@ config; custom sub-agents remain supported.
 |---|---|---|
 | `explore` | `glob`, `grep`, `read`, `tree` | Bounded workspace questions with evidence. |
 | `critic` | `read`, `glob`, `grep`, `tree` | Bounded independent review, no fixes or test suites. |
+| `fork` | `read`, `glob`, `grep`, `tree` | Bounded side task with a snapshot of parent context; default-on. No writes, shell, graph coordination, or recursive delegation. |
 | `response` | `read` | User-facing copy generator. Typically `output_to: external`. |
 | `memory_read` | `tree`, `read`, `grep` over the memory folder | Recall from agent memory. |
 | `memory_write` | `tree`, `read`, `write` | Persist findings into memory. |
@@ -330,7 +337,11 @@ Slash commands available inside input modules. Under
 | `/regen` | `/regenerate`, `/retry` | Re-run the last assistant turn as a sibling branch. |
 | `/edit <message_index> <new content>` | (none) | Edit a past user message and re-run from that point as a new branch. |
 | `/branch [<turn> <branch_id>\|latest]` | `/br` | List or switch the live branch for regen/edit alternatives. |
-| `/fork [event_id] [--name name]` | (none) | Copy the current session into a new `.kohakutr` file for alternate exploration. |
+| `/fork [event_id] [--name name]` | (none) | Copy the current session into a new `.kohakutr` file for alternate exploration (unchanged). |
+| `/btw QUESTION` | (none) | Start a private user-facing context fork; neither question nor answer enters the parent LLM input. |
+| `/btw --continue JOB_ID QUESTION` | (none) | Continue the retained side transcript in the same run after completion or stopping. |
+| `/btw --open JOB_ID` | (none) | Reopen a side transcript, hiding the inherited parent prefix. |
+| `/btw --stop JOB_ID` | (none) | Stop only that side job. |
 | `/plugin [list\|enable\|disable\|toggle] [name]` | `/plugins` | Inspect or toggle plugins. |
 | `/skill [list\|enable\|disable\|toggle\|show] [name]` | `/skills` | Inspect or toggle procedural skills. |
 | `/<skill-name> [args]` | (none) | User-invoke path for an enabled procedural skill when no built-in slash command shadows that name. |
