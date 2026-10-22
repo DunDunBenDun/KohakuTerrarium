@@ -485,6 +485,10 @@ class TestLlmIntegration:
             if e["provider"] in ("acme", "acme2")
         }
         assert acme_entries == {("acme", "acme-fast"), ("acme2", "acme-fast")}
+        ak.save_api_key("acme", "catalog-key")
+        assert next(e for e in list_all() if e["provider"] == "acme")["available"]
+        ak.save_api_key("acme", "")
+        assert not next(e for e in list_all() if e["provider"] == "acme")["available"]
 
         # 11. ``delete_backend`` refuses while a preset still binds to it,
         #     and refuses to drop a built-in provider entirely.
@@ -496,6 +500,7 @@ class TestLlmIntegration:
         assert delete_profile("acme-fast", provider="acme2") is True
         assert delete_backend("acme2") is True
         assert "acme2" not in backends_mod.load_backends()
+        assert not any(e["provider"] == "acme2" for e in list_all())
         # A bare-name delete with the name now unique under one provider.
         assert delete_profile("acme-fast") is True
         assert ("acme", "acme-fast") not in load_profiles()

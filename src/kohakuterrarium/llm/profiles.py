@@ -4,6 +4,7 @@ Resolve, persist, and list LLM presets against configured provider backends.
 """
 
 from copy import deepcopy
+from collections.abc import Callable
 from typing import Any
 
 from kohakuterrarium.llm.api_keys import KEYS_PATH as KEYS_PATH
@@ -184,6 +185,11 @@ _LEGACY_MODEL_PROVIDER_PREFERENCE: list[str] = [
 
 def get_default_model() -> str:
     """Return an unambiguous default identifier, upgrading legacy bare names."""
+    return _default_model(_is_available)
+
+
+def _default_model(available: Callable[[str], bool]) -> str:
+    """Resolve the default against the caller's credential view."""
     data = _load_yaml()
     explicit = data.get("default_model", "")
     if explicit:
@@ -191,7 +197,7 @@ def get_default_model() -> str:
             return explicit
         return _upgrade_bare_default(explicit) or explicit
     for provider_name, bare_name in _PROVIDER_DEFAULT_MODELS:
-        if _is_available(provider_name):
+        if available(provider_name):
             return f"{provider_name}/{bare_name}"
     return ""
 
@@ -534,10 +540,13 @@ def _login_provider_for(profile_or_data: dict[str, Any] | LLMProfile) -> str:
     )
 
 
-def _is_available(provider_name: str) -> bool:
+def _is_available(
+    provider_name: str, backends: dict[str, LLMBackend] | None = None
+) -> bool:
     if not provider_name:
         return False
-    backends = load_backends()
+    if backends is None:
+        backends = load_backends()
     backend = backends.get(provider_name)
     if backend and backend.backend_type == "codex":
         if backend.base_url:
@@ -573,6 +582,13 @@ def list_all() -> list[dict[str, Any]]:
     """List resolved presets, with user entries overriding exact built-in keys."""
     result: list[dict[str, Any]] = []
     definitions = _all_preset_definitions()
+    backends = load_backends()
+    availability: dict[str, bool] = {}
+
+    def _available(provider: str) -> bool:
+        if provider not in availability:
+            availability[provider] = _is_available(provider, backends)
+        return availability[provider]
 
     def _entry(
         profile: LLMProfile, preset: LLMPreset | None, source: str
@@ -583,7 +599,7 @@ def list_all() -> list[dict[str, Any]]:
             "provider": profile.provider,
             "login_provider": profile.provider,
             "backend_type": profile.backend_type,
-            "available": _is_available(profile.provider),
+            "available": _available(profile.provider),
             "source": source,
             "max_context": profile.max_context,
             "max_output": profile.max_output,
@@ -599,7 +615,7 @@ def list_all() -> list[dict[str, Any]]:
 
     seen: set[tuple[str, str]] = set()
     for (provider, name), preset in load_presets().items():
-        profile = _resolve_preset(preset, load_backends())
+        profile = _resolve_preset(preset, backends)
         if profile is not None:
             seen.add((provider, name))
             result.append(_entry(profile, definitions.get((provider, name)), "user"))
@@ -607,12 +623,12 @@ def list_all() -> list[dict[str, Any]]:
     for (provider, name), data in get_all_presets().items():
         if (provider, name) in seen:
             continue
-        profile = _builtin_preset_to_runtime(provider, name, data)
+        profile = _resolve_preset(_preset_from_data(name, data, provider), backends)
         if profile is None:
             continue
         result.append(_entry(profile, definitions.get((provider, name)), "preset"))
 
-    default = get_default_model()
+    default = _default_model(_available)
     default_provider, default_bare = _split_provider_prefix(default)
     for entry in result:
         is_default = False

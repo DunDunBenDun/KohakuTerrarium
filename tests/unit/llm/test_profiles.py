@@ -10,11 +10,13 @@ and the package scanner are stubbed so resolution stays deterministic.
 """
 
 import sys
+from collections import Counter
 
 import pytest
 
 from kohakuterrarium.llm import api_keys as ak
 from kohakuterrarium.llm import presets as presets_mod
+from kohakuterrarium.llm import profiles as profiles_mod
 from kohakuterrarium.llm.codex_auth import CodexTokens
 from kohakuterrarium.llm.grok_auth import GrokTokens
 from kohakuterrarium.llm.profile_types import LLMBackend, LLMPreset
@@ -722,6 +724,46 @@ class TestPresetCrud:
 
 
 class TestLoadProfilesAndListAll:
+    def test_catalog_reuses_backends_and_availability_only_within_call(
+        self, monkeypatch
+    ):
+        for i in range(12):
+            save_profile(
+                LLMPreset(name=f"custom-{i}", model=f"m-{i}", provider="openai")
+            )
+        backend_reads = []
+        availability_reads = Counter()
+        load = profiles_mod.load_backends
+        available = profiles_mod._is_available
+
+        def observed_backends():
+            backend_reads.append(True)
+            return load()
+
+        def observed_available(provider, *args, **kwargs):
+            availability_reads[provider] += 1
+            return available(provider, *args, **kwargs)
+
+        monkeypatch.setattr(profiles_mod, "load_backends", observed_backends)
+        monkeypatch.setattr(profiles_mod, "_is_available", observed_available)
+        first = list_all()
+        assert len(backend_reads) == 1
+        assert availability_reads == Counter({e["provider"]: 1 for e in first})
+        assert not any(e["available"] for e in first if e["provider"] == "openai")
+
+        save_profile(LLMPreset(name="custom-0", model="changed", provider="openai"))
+        monkeypatch.setenv("OPENAI_API_KEY", "new-key")
+        backend_reads.clear()
+        availability_reads.clear()
+        second = list_all()
+        assert len(backend_reads) == 1
+        assert availability_reads == Counter({e["provider"]: 1 for e in second})
+        assert all(e["available"] for e in second if e["provider"] == "openai")
+        assert next(e for e in second if e["name"] == "custom-0")["model"] == "changed"
+        assert [(e["provider"], e["name"]) for e in second] == [
+            (e["provider"], e["name"]) for e in first
+        ]
+
     def test_load_profiles_empty_when_no_user_presets(self):
         assert load_profiles() == {}
 
