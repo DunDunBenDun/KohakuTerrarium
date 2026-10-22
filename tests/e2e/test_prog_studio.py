@@ -165,7 +165,8 @@ class TestProgStudioJourney:
             subagent_names = {
                 s["name"] for s in studio.catalog.builtins.list("subagents")
             }
-            assert {"explore", "plan"} <= subagent_names
+            assert {"explore", "critic"} <= subagent_names
+            assert not {"worker", "plan", "research", "coordinator"} & subagent_names
             bash_info = studio.catalog.builtins.info("bash")
             assert bash_info["name"] == "bash"
             assert bash_info["source"] == "builtin"

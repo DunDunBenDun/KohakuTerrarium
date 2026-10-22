@@ -38,7 +38,6 @@ from kohakuterrarium.bootstrap import agent_init as _agent_init
 from kohakuterrarium.bootstrap import llm as _bootstrap_llm
 from kohakuterrarium.builtins.plugins.budget.plugin import BudgetPlugin
 from kohakuterrarium.builtins.plugins.sandbox.plugin import SandboxPlugin
-from kohakuterrarium.builtins.subagents.research import RESEARCH_CONFIG
 from kohakuterrarium.builtins.tools import deepseek_web, web_fetch, web_search
 from kohakuterrarium.builtins.tools.canvas_image import CanvasImageTool
 from kohakuterrarium.builtins.tools.edit import EditTool
@@ -1993,7 +1992,7 @@ class TestModulesIntegration:
         assert changed.success
         assert tool.backend == "deepseek"
         research = SubAgent(
-            config=RESEARCH_CONFIG,
+            config=SubAgentConfig(name="research", tools=["web_search", "web_fetch"]),
             parent_registry=agent.registry,
             llm=agent.llm,
             agent_path=tmp_path,

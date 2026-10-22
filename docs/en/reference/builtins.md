@@ -242,18 +242,21 @@ Shipped sub-agent configs under
 `src/kohakuterrarium/builtins/subagents/`. Reference them in a creature
 config under `subagents:` by name.
 
-All builtin sub-agents load `default_plugins: ["auto-compact"]` and the unified
-`budget` plugin with minimal runtime options: turn soft/hard `40/60`, tool-call
-soft/hard `75/100`, and no walltime budget.
+The task helpers `explore` and `critic` use inspection-only tools and the `budget`
+plugin: soft/hard model calls `8/12`, tool calls `24/40`, absolute `max_turns: 14`,
+and whole-run `timeout: 600` seconds. Neither opts into automatic compaction.
+The parent supplies context and diffs; graph creatures own substantial work.
+Service presets retain their existing `auto-compact` opt-in and `40/60` turn,
+`75/100` tool-call budgets.
+
+Removed builtins `worker`, `plan`, `research`, and `coordinator` are warned about
+and skipped in older configs, even under strict startup. Update kt-biome or the
+config; custom sub-agents remain supported.
 
 | Name | Tools | Purpose |
 |---|---|---|
-| `worker` | `read`, `write`, `bash`, `glob`, `grep`, `edit`, `multi_edit` | Fix bugs, refactor, run validations. |
-| `coordinator` | `send_message`, `scratchpad` | Decompose → dispatch → aggregate. |
-| `explore` | `glob`, `grep`, `read`, `tree`, `bash` | Read-only exploration. |
-| `plan` | `explore` tools + `think` | Read-only planning. |
-| `research` | `web_search`, `web_fetch`, `read`, `write`, `think`, `scratchpad` | External research. |
-| `critic` | `read`, `glob`, `grep`, `tree`, `bash` | Code review. |
+| `explore` | `glob`, `grep`, `read`, `tree` | Bounded workspace questions with evidence. |
+| `critic` | `read`, `glob`, `grep`, `tree` | Bounded independent review, no fixes or test suites. |
 | `response` | `read` | User-facing copy generator. Typically `output_to: external`. |
 | `memory_read` | `tree`, `read`, `grep` over the memory folder | Recall from agent memory. |
 | `memory_write` | `tree`, `read`, `write` | Persist findings into memory. |

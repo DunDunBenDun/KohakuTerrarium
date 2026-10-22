@@ -1,6 +1,6 @@
 ---
 name: response
-description: 'Draft a long user-facing response. Not for internal analysis - use explore or plan.'
+description: 'Draft a long user-facing response. Not for internal analysis - the caller supplies the conclusions.'
 category: subagent
 tags: [output]
 ---

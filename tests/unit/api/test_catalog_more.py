@@ -75,17 +75,14 @@ class TestBuiltinsRoute:
         r = _client(builtins_mod.router).get(PREFIX + "/subagents")
         assert r.status_code == 200
         names = {e["name"] for e in r.json()}
-        # Built-in sub-agents documented in CLAUDE.md.
         assert {
-            "coordinator",
             "critic",
             "explore",
-            "plan",
-            "research",
+            "summarize",
             "response",
             "memory_read",
             "memory_write",
-        } <= names
+        } == names
 
     def test_get_subagent_doc_unknown(self):
         r = _client(builtins_mod.router).get(PREFIX + "/subagents/ghost/doc")

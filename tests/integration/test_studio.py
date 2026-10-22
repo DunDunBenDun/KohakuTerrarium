@@ -1664,7 +1664,10 @@ class TestStudioIntegration:
             assert bash_info["name"] == "bash"
             assert bash_info["source"] == "builtin"
             subagent_entries = studio.catalog.builtins.list("subagents")
-            assert {"explore", "plan"} <= {s["name"] for s in subagent_entries}
+            assert {"explore", "critic"} <= {s["name"] for s in subagent_entries}
+            assert not {"worker", "plan", "research", "coordinator"} & {
+                s["name"] for s in subagent_entries
+            }
             # Triggers are a first-class builtin kind too.
             trigger_names = {
                 t["name"] for t in studio.catalog.builtins.list("triggers")

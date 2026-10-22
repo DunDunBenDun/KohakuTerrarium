@@ -269,7 +269,11 @@ def _write_rich_creature(root: Path) -> Path:
                 module: ./custom/ext.py
                 class: StampTool
             subagents:
-              - name: research
+              - {name: worker, type: builtin}
+              - {name: plan, type: builtin}
+              - {name: research, type: builtin}
+              - {name: coordinator, type: builtin}
+              - name: explore
                 type: builtin
               - name: critic
                 type: builtin
@@ -463,7 +467,7 @@ class TestBootstrapIntegration:
     #    trigger + llm_profile, all wired and exercised live ─────────
 
     async def test_rich_creature_wires_every_factory_and_runs(
-        self, scripted_llm, tmp_path
+        self, scripted_llm, tmp_path, caplog
     ):
         """A fully-loaded creature built via ``Agent.from_path``.
 
@@ -506,14 +510,14 @@ class TestBootstrapIntegration:
         timer_tool = agent.registry.get_tool("add_timer")
         assert isinstance(timer_tool, CallableTriggerTool)
 
-        # bootstrap.subagents -> the builtin ``research`` sub-agent plus a
-        # ``critic`` whose inline ``extra_prompt`` option was overlaid
-        # onto the builtin config, plus a ``scout`` loaded as a
-        # ``SubAgentConfig`` object from a custom module.
-        assert "research" in agent.subagent_manager.list_subagents()
-        assert "critic" in agent.subagent_manager.list_subagents()
-        assert "scout" in agent.subagent_manager.list_subagents()
-        assert agent.registry.get_subagent("research") is not None
+        assert set(agent.subagent_manager.list_subagents()) == {
+            "explore",
+            "critic",
+            "scout",
+        }
+        assert set(agent.registry.list_subagents()) == {"explore", "critic", "scout"}
+        for removed in ("worker", "plan", "research", "coordinator"):
+            assert f"Skipping unavailable builtin sub-agent {removed!r}" in caplog.text
         critic_cfg = agent.registry.get_subagent("critic")
         assert critic_cfg.extra_prompt == "Be extra harsh."
         scout_cfg = agent.registry.get_subagent("scout")
@@ -593,6 +597,22 @@ class TestBootstrapIntegration:
         # stop() tears the trigger back down.
         assert heartbeat.is_running is False
         assert agent.llm.call_count == 2
+
+        for name in ("explore", "critic"):
+            agent.subagent_manager.llm = ScriptedLLM(
+                [
+                    f"[/read]\n@@path={config_dir / 'system.md'}\n[read/]",
+                    "Inspected system.md; no broader coverage claimed.",
+                ]
+            )
+            job_id = await agent.subagent_manager.spawn(
+                name, "Inspect system.md only.", background=False
+            )
+            result = agent.subagent_manager.get_result(job_id)
+            assert result.success
+            assert result.metadata["tools_used"] == ["read"]
+            assert "Inspected system.md" in result.output
+            assert agent.subagent_manager.get_status(job_id).state.value == "done"
 
         # ── direct factory-driver coverage for the bootstrap sub-agent /
         #    trigger / tool factories: the override-overlay branches and
@@ -1063,7 +1083,7 @@ class TestBootstrapIntegration:
                   - name: bad-trigger
                     type: not_a_real_trigger
                 subagents:
-                  - name: research
+                  - name: explore
                     type: builtin
                   - name: phantom
                     type: not_a_real_subagent_type
@@ -1093,7 +1113,7 @@ class TestBootstrapIntegration:
         assert "bad-trigger" not in trigger_ids
 
         # The bad sub-agent entry was dropped; the valid builtin survived.
-        assert "research" in agent.subagent_manager.list_subagents()
+        assert "explore" in agent.subagent_manager.list_subagents()
         assert "phantom" not in agent.subagent_manager.list_subagents()
 
         # The unresolvable plugin name did not land in the manager, but

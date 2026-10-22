@@ -298,7 +298,7 @@ class TestCommandsIntegration:
         asst = _assistant_text(agent)
         # Builtin subagent skill fully resolved into the conversation.
         assert expected_explore in asst
-        assert "Investigates a codebase across many files" in asst
+        assert "A lightweight, read-only investigation in a fresh context" in asst
         # The procedural skill resolved via the SkillRegistry fallback —
         # rendered with the ``--- Skill: ---`` preamble + origin + body.
         assert "--- Skill: deploy_routine ---" in asst
