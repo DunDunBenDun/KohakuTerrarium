@@ -48,6 +48,13 @@ class AgentModelMixin:
         new_llm = create_llm_from_profile_name(profile_name)
         identifier = profile_to_identifier(profile)
 
+        retired = getattr(self, "_retired_llms", None)
+        if retired is None:
+            retired = self._retired_llms = []
+        retired.append(self.llm)
+        if self.compact_manager:
+            retired.append(self.compact_manager._llm)
+
         self._llm_selector = profile_name
         self._llm_identifier = identifier
         self.llm = new_llm

@@ -5,8 +5,79 @@ import types
 import pytest
 
 from kohakuterrarium.core import agent_model as am
+from kohakuterrarium import Agent
+from kohakuterrarium.core.config_types import AgentConfig
 from kohakuterrarium.core.agent_compact import AgentCompactMixin
 from kohakuterrarium.core.agent_model import AgentModelMixin
+from kohakuterrarium.llm.backends import save_yaml_store
+from kohakuterrarium.llm.openai import OpenAIProvider
+
+
+@pytest.mark.parametrize("fail_first_close", [False, True])
+async def test_replaced_clients_stay_open_for_borrowers_and_close_on_stop(
+    tmp_path, monkeypatch, fail_first_close
+):
+    monkeypatch.setenv("KT_CLOSE_TEST_KEY", "dummy-local-key")
+    save_yaml_store(
+        {
+            "version": 2,
+            "backends": {
+                "close-test": {
+                    "backend_type": "openai",
+                    "base_url": "http://127.0.0.1:9/v1",
+                    "api_key_env": "KT_CLOSE_TEST_KEY",
+                }
+            },
+            "presets": {"close-test": {"next": {"model": "test-model"}}},
+        }
+    )
+    original = OpenAIProvider(
+        model="test-model", api_key="dummy-local-key", base_url="http://127.0.0.1:9/v1"
+    )
+    agent = await Agent.build(
+        AgentConfig(
+            name="switch",
+            compact={"enabled": False, "compact_model": "close-test/next"},
+        ),
+        llm=original,
+        pwd=tmp_path,
+        io="headless",
+    )
+    providers = [original]
+    close_client = original._client.close
+    close_calls = 0
+
+    async def observed_close():
+        nonlocal close_calls
+        close_calls += 1
+        if fail_first_close and close_calls == 1:
+            raise RuntimeError("client close failed")
+        await close_client()
+
+    monkeypatch.setattr(original._client, "close", observed_close)
+    try:
+        await agent.start()
+        borrower = original.fork()
+        for _ in range(2):
+            providers.append(agent.compact_manager._llm)
+            agent.switch_model("close-test/next")
+            providers.append(agent.llm)
+        providers.append(agent.compact_manager._llm)
+        assert all(not p._client.is_closed() for p in providers)
+        await borrower.close()
+        assert not original._client.is_closed()
+        if fail_first_close:
+            with pytest.raises(RuntimeError, match="client close failed"):
+                await agent.stop()
+            assert all(p._client.is_closed() for p in providers[1:])
+        await agent.stop()
+        assert all(p._client.is_closed() for p in providers)
+        await agent.stop()
+        assert close_calls == (2 if fail_first_close else 1)
+    finally:
+        await agent.stop()
+        for provider in providers:
+            await provider.close()
 
 
 class _Router:
