@@ -16,6 +16,7 @@ from kohakuterrarium.cli.run import _resolve_session
 from kohakuterrarium.session.readonly import read_session_meta
 from kohakuterrarium.session.resume_target import resolve_resume_path
 from kohakuterrarium.studio.hooks import register_group_hooks
+from kohakuterrarium.studio.identity.drive_settings import resolve_drive_kwargs
 from kohakuterrarium.studio.persistence.resume import announce_migration_if_needed
 from kohakuterrarium.terrarium.engine import Terrarium
 from kohakuterrarium.utils.fd_limit import raise_fd_limit
@@ -124,7 +125,9 @@ def _resolve_missing_pwd(path, pwd_override: str | None) -> str | None | Literal
 async def _run(path, pwd_override, llm, io_mode: str | None) -> int:
     """Resume the engine and run the selected interactive surface."""
     register_group_hooks()
-    engine = await Terrarium.resume(str(path), pwd=pwd_override, llm=llm)
+    engine = await Terrarium.resume(
+        str(path), pwd=pwd_override, llm=llm, **resolve_drive_kwargs()
+    )
     async with engine:
         graph_id = next(iter(engine._topology.graphs.keys()), None)
         if graph_id is None:
