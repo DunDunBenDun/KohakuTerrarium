@@ -4,7 +4,12 @@ import { snapshotContent } from "@/public/chat/contentSnapshot"
 import { extractReasoning, mergeReasoningSegments } from "@/utils/chatReasoning"
 import { reduceModelRecovery } from "./chatRecovery"
 
-import { injectScope, registerScopeDisposer, scopeOfStoreId } from "@/composables/useScope"
+import {
+  injectScope,
+  disposeScopeStore,
+  registerScopeDisposer,
+  scopeOfStoreId,
+} from "@/composables/useScope"
 import { createVisibilityInterval } from "@/composables/useVisibilityInterval"
 import {
   attentionSummary,
@@ -6629,11 +6634,11 @@ function _factoryFor(scope) {
       // When the macro shell tabs store closes the last tab carrying
       // this scope, free the chat store + its WS. The default scope
       // ("default") lives forever — v1 never explicitly disposes.
-      registerScopeDisposer(scope, () => {
+      registerScopeDisposer(scope, (pinia) => {
         try {
           removeAttentionScope(scope)
-          useFn()._cleanup?.()
-          useFn().$dispose?.()
+          useFn(pinia)._cleanup?.()
+          disposeScopeStore(useFn(pinia), pinia)
         } catch {
           /* swallow — disposer must not throw */
         }

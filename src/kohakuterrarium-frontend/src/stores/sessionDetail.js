@@ -16,7 +16,7 @@
 import { defineStore } from "pinia"
 import { getCurrentInstance } from "vue"
 
-import { injectScope, registerScopeDisposer } from "@/composables/useScope"
+import { injectScope, disposeScopeStore, registerScopeDisposer } from "@/composables/useScope"
 import { sessionAPI } from "@/utils/api"
 
 const VALID_TABS = new Set(["overview", "trace", "conv", "cost", "find", "diff", "drives"])
@@ -301,12 +301,12 @@ function _factoryFor(scope) {
     useFn = defineStore(`sessionDetail:${key}`, _sessionDetailOptions)
     _sessionDetailFactories.set(key, useFn)
     if (scope) {
-      registerScopeDisposer(scope, () => {
+      registerScopeDisposer(scope, (pinia) => {
         try {
-          const store = useFn()
+          const store = useFn(pinia)
           store.loadEpoch++
           summaryRequests.delete(store)
-          store.$dispose?.()
+          disposeScopeStore(store, pinia)
         } catch {
           /* swallow */
         }

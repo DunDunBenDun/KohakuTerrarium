@@ -14,7 +14,7 @@
 import { defineStore } from "pinia"
 import { getCurrentInstance } from "vue"
 
-import { injectScope, registerScopeDisposer } from "@/composables/useScope"
+import { injectScope, disposeScopeStore, registerScopeDisposer } from "@/composables/useScope"
 import { sessionAPI } from "@/utils/api"
 
 const TURN_PAGE_SIZE = 1000
@@ -243,9 +243,9 @@ function _factoryFor(scope) {
     useFn = defineStore(`turnRollup:${key}`, _turnRollupOptions)
     _turnRollupFactories.set(key, useFn)
     if (scope) {
-      registerScopeDisposer(scope, () => {
+      registerScopeDisposer(scope, (pinia) => {
         try {
-          useFn().$dispose?.()
+          disposeScopeStore(useFn(pinia), pinia)
         } catch {
           /* swallow */
         }
