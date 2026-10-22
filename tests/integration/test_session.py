@@ -40,6 +40,7 @@ from kohakuterrarium.session import history as _history_mod
 from kohakuterrarium.session import resume as _resume_mod
 from kohakuterrarium.session import resume_branch as _resume_branch_mod
 from kohakuterrarium.session.attachment_service import get_attach_state
+from kohakuterrarium.session.output import SessionOutput
 from kohakuterrarium.session.embedding import BaseEmbedder
 from kohakuterrarium.session.errors import (
     AlreadyAttachedError,
@@ -786,8 +787,14 @@ class TestSessionIntegration:
         # Resume interrupted output through the async API, then stop with a
         # short tail that never reached the durable streaming checkpoint.
         interrupted = SessionStore(str(session_path))
+        interrupted_text = "interrupted async response" * 512
         try:
-            interrupted.state["scribe:open_text"] = "interrupted async response"
+            interrupted_output = SessionOutput("scribe", interrupted, None)
+            for offset in range(0, len(interrupted_text), 512):
+                await interrupted_output.write_stream(
+                    interrupted_text[offset : offset + 512]
+                )
+            await interrupted_output.drain()
         finally:
             interrupted.close(update_status=False)
         async_agent, async_store = await resume_agent_async(session_path)
@@ -805,7 +812,7 @@ class TestSessionIntegration:
                 for e in verified.get_events("scribe")
                 if e["type"] == "text_chunk"
             ]
-            assert chunks[-2:] == ["interrupted async response", "graceful tail"]
+            assert chunks[-2:] == [interrupted_text, "graceful tail"]
             assert not verified.state.get("scribe:open_text")
         finally:
             verified.close(update_status=False)

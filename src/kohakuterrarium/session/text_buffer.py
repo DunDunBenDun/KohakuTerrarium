@@ -7,6 +7,7 @@ event persistence to ``SessionOutput``.
 import time
 from collections.abc import Callable
 from concurrent.futures import Future
+from threading import Lock
 from typing import Any
 
 from kohakuterrarium.utils.logging import get_logger
@@ -64,6 +65,8 @@ class OpenTextSegment:
         self._buf = ""
         self._persisted_len = 0
         self._last_persist = time.monotonic()
+        self._pending_lock = Lock()
+        self._pending: list[str] | None = None
         self.generation = 0
 
     def append(self, chunk: str) -> None:
@@ -105,6 +108,8 @@ class OpenTextSegment:
         self._slot_active = False
 
     def _reset(self) -> None:
+        with self._pending_lock:
+            self._pending = None
         self._buf = ""
         self._persisted_len = 0
         self._last_persist = time.monotonic()
@@ -117,10 +122,39 @@ class OpenTextSegment:
         return value if isinstance(value, str) else ""
 
     def _persist(self, text: str, *, after: Future | None = None) -> None:
-        if self._submit is not None:
-            self._submit(self._write_slot, text, after=after)
-        else:
+        if self._submit is None:
             self._write_slot(text, after=after)
+            return
+        if text and after is None:
+            with self._pending_lock:
+                if self._pending is not None:
+                    self._pending[0] = text
+                    return
+                pending = self._pending = [text]
+            try:
+                future = self._submit(self._write_pending, pending)
+            except Exception:
+                self._forget_pending(pending)
+                raise
+            if isinstance(future, Future):
+                future.add_done_callback(lambda _: self._forget_pending(pending))
+        else:
+            # A clear/retire must stay between the old and new segment writes.
+            with self._pending_lock:
+                self._pending = None
+            self._submit(self._write_slot, text, after=after)
+
+    def _write_pending(self, pending: list[str]) -> None:
+        with self._pending_lock:
+            text = pending.pop()
+            if self._pending is pending:
+                self._pending = None
+        self._write_slot(text)
+
+    def _forget_pending(self, pending: list[str]) -> None:
+        with self._pending_lock:
+            if self._pending is pending:
+                self._pending = None
 
     def _write_slot(self, text: str, *, after: Future | None = None) -> None:
         try:
