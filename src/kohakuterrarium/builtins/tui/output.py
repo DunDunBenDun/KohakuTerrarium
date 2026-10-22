@@ -137,14 +137,12 @@ class TUIOutput(BaseOutputModule):
         self._turn_started = False
         if self._tui:
             attention.processing_start(self._tui, self._target)
-            self._tui.start_thinking()
+            self._tui.start_thinking(target=self._target)
 
     async def on_processing_end(self) -> None:
         if self._tui:
             attention.processing_end(self._tui, self._target)
             self._tui.end_streaming(target=self._target)
-            self._tui.stop_thinking()
-            self._tui.set_idle()
         self._turn_started = False
 
     # -- User input ---------------------------------------------------------
