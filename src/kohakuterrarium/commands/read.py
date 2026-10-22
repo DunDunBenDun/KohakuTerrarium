@@ -214,8 +214,9 @@ def _render_skill_info(context: Any, name: str) -> str | None:
     if skill.paths:
         parts.append(f"Paths: {', '.join(skill.paths)}")
     parts.append("")  # Separate metadata from the skill body.
-    if skill.body:
-        parts.append(skill.body)
+    body = skill.render_body()
+    if body:
+        parts.append(body)
     return "\n".join(parts)
 
 
