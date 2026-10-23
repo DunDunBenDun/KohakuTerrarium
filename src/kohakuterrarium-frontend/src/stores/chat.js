@@ -2801,7 +2801,8 @@ const _chatStoreOptions = {
         const target = tab
         const payload = { type: "input", target, content: contentParts, event_id: eventId }
         const branchView = this.branchViewByTab[tab]
-        if (branchView && Object.keys(branchView).length) payload.branch_view = { ...branchView }
+        if (this._browsedBranchByTab[tab] && branchView && Object.keys(branchView).length)
+          payload.branch_view = { ...branchView }
         this._ws.send(JSON.stringify(payload))
         this._capturePendingBranchPath(target, payload.branch_view)
         // Flip processing optimistically — the backend's

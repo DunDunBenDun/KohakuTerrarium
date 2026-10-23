@@ -1902,6 +1902,61 @@ class TestStrictBranchView:
         live_ids = select_live_event_ids(events, branch_view={1: 99})
         assert live_ids == set()
 
+    @staticmethod
+    def _events_with_trigger_turn():
+        return [
+            {
+                "type": "user_message",
+                "turn_index": 1,
+                "branch_id": 1,
+                "parent_branch_path": [],
+            },
+            {
+                "type": "background_result",
+                "turn_index": 2,
+                "branch_id": 1,
+                "parent_branch_path": [[1, 1]],
+            },
+            {
+                "type": "user_message",
+                "turn_index": 3,
+                "branch_id": 1,
+                "parent_branch_path": [[1, 1], [2, 1]],
+            },
+            {
+                "type": "user_message",
+                "turn_index": 3,
+                "branch_id": 2,
+                "parent_branch_path": [[1, 1], [2, 1]],
+            },
+        ]
+
+    def test_turn_without_user_message_passes_through_to_match_the_live_path(self):
+        events = self._events_with_trigger_turn()
+        live_path = {1: 1, 2: 1, 3: 2}
+
+        assert resolve_branch_view_strict(events, live_path) == live_path
+
+    def test_userless_turn_rejects_a_branch_it_never_had(self):
+        with pytest.raises(InvalidBranchViewError, match="does not exist"):
+            resolve_branch_view_strict(
+                self._events_with_trigger_turn(), {1: 1, 2: 99, 3: 2}
+            )
+
+    def test_partial_view_gains_its_userless_ancestors(self):
+        events = self._events_with_trigger_turn()
+
+        assert resolve_branch_view_strict(events, {3: 2}) == {1: 1, 2: 1, 3: 2}
+
+    def test_descendant_of_trigger_turn_still_validates_its_user_branches(self):
+        events = self._events_with_trigger_turn()
+
+        assert resolve_branch_view_strict(events, {3: 1}) == {1: 1, 2: 1, 3: 1}
+        with pytest.raises(InvalidBranchViewError, match="does not exist"):
+            resolve_branch_view_strict(events, {2: 1, 3: 9})
+        with pytest.raises(InvalidBranchViewError, match="does not exist"):
+            resolve_branch_view_strict(events, {9: 1})
+
     def test_rejects_incompatible_ancestor_and_descendant(self):
         with pytest.raises(InvalidBranchViewError, match="incompatible"):
             resolve_branch_view_strict(self._events(), {1: 1, 2: 2})
