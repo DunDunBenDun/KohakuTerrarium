@@ -273,3 +273,32 @@ async def test_restart_loads_new_metadata_for_the_new_manager(tmp_path):
     finally:
         await agent.stop()
         store.close()
+
+
+@pytest.mark.parametrize("message_idx", [0, 1])
+async def test_rewind_to_empty_context_restores_reset_compact_state(
+    tmp_path, message_idx
+):
+    store = _CountingStore(tmp_path / "resume.kohakutr")
+    _save_history(store, cooldown=11.0)
+    agent = await _agent()
+    try:
+        inject_saved_state(agent, store, "alice")
+        agent.attach_session_store(store)
+        await agent.start()
+        manager = agent.compact_manager
+        assert (manager._compact_count, manager._last_compact_time) == (4, 11.0)
+        await agent.rewind_to(message_idx)
+        assert all(
+            message.role == "system"
+            for message in agent.controller.conversation.get_messages()
+        )
+        assert store.state["alice:compact_count"] == 0
+        assert store.state["alice:last_compact_time"] == 0.0
+        for _ in range(2):
+            agent.attach_session_store(store)
+            assert (manager._compact_count, manager._last_compact_time) == (0, 0.0)
+        assert store.event_reads == 1
+    finally:
+        await agent.stop()
+        store.close()

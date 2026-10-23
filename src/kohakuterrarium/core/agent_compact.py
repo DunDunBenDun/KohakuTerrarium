@@ -39,6 +39,7 @@ class _ResumeCompactState:
     conversation: ReferenceType
     path: dict[int, int]
     persisted_view: dict[int, int] | None
+    context_cutoff: int
     count: int
     cooldown: float
     manager: ReferenceType | None = None
@@ -89,6 +90,7 @@ def stage_resume_compact_state(
             ref(conversation),
             live_branch_path(agent),
             load_persisted_branch_view(store, namespace),
+            getattr(agent, "_context_cutoff_event_id", 0),
             int(compact["compact_count"]),
             float(compact["last_compact_time"]),
         )
@@ -116,6 +118,7 @@ def restore_resume_compact_state(
         or saved.namespace != namespace
         or saved.conversation() is not agent.controller.conversation
         or saved.persisted_view != load_persisted_branch_view(source, namespace)
+        or saved.context_cutoff != getattr(agent, "_context_cutoff_event_id", 0)
         or any(path.get(turn) != branch for turn, branch in saved.path.items())
         or saved.manager is None
         and path != saved.path
