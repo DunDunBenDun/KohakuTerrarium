@@ -9,6 +9,7 @@ from kohakuterrarium.core.compact_branch import (
     compact_rule_from_event,
 )
 from kohakuterrarium.core.job_label import canonical_tool_name, make_job_label
+from kohakuterrarium.llm.message import coalesce_user_contents
 from kohakuterrarium.session.assistant_history import (
     _coerce_tool_args_to_json,
     assistant_round_messages,
@@ -407,6 +408,7 @@ def replay_conversation(
     # migration can copy the same event twice; duplicate user messages
     # would break turn-targeted edit resolution and pollute the view.
     seen_user_messages: set[tuple[int, int]] = set()
+    injected_at = -1
 
     def _flush_text() -> None:
         nonlocal merge_image
@@ -557,6 +559,23 @@ def replay_conversation(
                     "branch_id": evt.get("branch_id"),
                 }
             messages.append(message)
+        elif etype == "user_input_injected":
+            content = evt.get("content", "")
+            if injected_at == len(messages) - 1 and messages:
+                previous = messages[-1]
+                previous["content"] = coalesce_user_contents(
+                    [previous["content"], content]
+                )
+            else:
+                message = {"role": "user", "content": content}
+                if include_metadata:
+                    message["metadata"] = {
+                        "event_id": evt.get("event_id"),
+                        "turn_index": evt.get("turn_index"),
+                        "branch_id": evt.get("branch_id"),
+                    }
+                messages.append(message)
+                injected_at = len(messages) - 1
         elif etype == "assistant_tool_calls":
             tool_calls = evt.get("tool_calls") or []
             if (

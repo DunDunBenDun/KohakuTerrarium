@@ -4530,6 +4530,41 @@ class TestOpportunisticInputInjection:
         finally:
             await agent.stop()
 
+    async def test_replay_of_recorded_events_keeps_the_drained_message(
+        self, make_agent, tmp_path
+    ):
+        from kohakuterrarium.core.events import TriggerEvent
+        from kohakuterrarium.session.history import replay_conversation
+        from kohakuterrarium.session.store import SessionStore
+
+        agent = make_agent()
+        store = SessionStore(str(tmp_path / "injected.kohakutr"))
+        agent.attach_session_store(store)
+        await agent.start()
+        try:
+            agent._event_inbox.put(
+                EventEnvelope(TriggerEvent(type="user_input", content="line one"))
+            )
+            agent._event_inbox.put(
+                EventEnvelope(TriggerEvent(type="user_input", content="line two"))
+            )
+            await agent._drain_mid_turn_pending_inputs(agent.controller)
+            live = [
+                m.content
+                for m in agent.controller.conversation.get_messages()
+                if getattr(m, "role", None) == "user"
+            ]
+            replayed = [
+                m["content"]
+                for m in replay_conversation(store.get_events(agent.config.name))
+                if m["role"] == "user"
+            ]
+            assert live[-1] == "line one\n\nline two"
+            assert replayed[-1] == live[-1]
+        finally:
+            await agent.stop()
+            store.close()
+
     async def test_drain_emits_one_activity_per_event(self, make_agent):
         from kohakuterrarium.core.events import TriggerEvent
 
@@ -5787,10 +5822,10 @@ class TestMidTurnBatchDrain:
         # ``normalize_content_parts`` produces typed ContentPart
         # instances; the mixed-modal coalesce used to keep only dicts,
         # silently dropping the text AND the image of a typed entry.
-        from kohakuterrarium.core.agent_mid_turn import _coalesce_user_contents
+        from kohakuterrarium.llm.message import coalesce_user_contents
         from kohakuterrarium.llm.message import ImagePart, TextPart
 
-        combined = _coalesce_user_contents(
+        combined = coalesce_user_contents(
             [
                 [TextPart(text="look at this"), ImagePart(url="http://x/i.png")],
                 "second message",
