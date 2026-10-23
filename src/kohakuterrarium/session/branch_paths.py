@@ -35,25 +35,54 @@ def index_parent_paths(
     """
     paths: dict[int, tuple[tuple[int, int], ...]] = {}
     latest_by_turn: dict[int, int] = {}
+    shared: dict[tuple, tuple] = {}
+    legacy: dict[int, tuple] = {}
+    latest_cached_turn: int | None = None
+    canonical = True
     for evt in events_list:
         ti = evt.get("turn_index")
         bi = evt.get("branch_id")
         eid = evt.get("event_id")
+        if canonical and any(
+            isinstance(value, int) and type(value) is not int for value in (ti, bi)
+        ):
+            canonical = False
+            legacy.clear()
         explicit = _coerce_path(evt.get("parent_branch_path"))
         if isinstance(eid, int):
             if explicit:
+                if all(type(t) is int and type(b) is int for t, b in explicit):
+                    explicit = shared.setdefault(explicit, explicit)
                 paths[eid] = explicit
             elif isinstance(ti, int):
-                paths[eid] = tuple(
-                    sorted(
-                        ((t, b) for t, b in latest_by_turn.items() if t < ti),
-                        key=lambda p: p[0],
+                path = legacy.get(ti) if canonical else None
+                if path is None:
+                    path = tuple(
+                        sorted(
+                            ((t, b) for t, b in latest_by_turn.items() if t < ti),
+                            key=lambda p: p[0],
+                        )
                     )
-                )
+                    if canonical:
+                        path = shared.setdefault(path, path)
+                        legacy[ti] = path
+                        latest_cached_turn = (
+                            ti
+                            if latest_cached_turn is None
+                            else max(latest_cached_turn, ti)
+                        )
+                paths[eid] = path
         if isinstance(ti, int) and isinstance(bi, int):
             prev = latest_by_turn.get(ti, 0)
             if bi > prev:
                 latest_by_turn[ti] = bi
+                if (
+                    canonical
+                    and latest_cached_turn is not None
+                    and ti < latest_cached_turn
+                ):
+                    legacy = {t: path for t, path in legacy.items() if t <= ti}
+                    latest_cached_turn = max(legacy, default=None)
     return paths
 
 

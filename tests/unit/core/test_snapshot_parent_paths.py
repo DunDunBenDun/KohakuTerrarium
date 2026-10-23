@@ -4,6 +4,7 @@ from copy import deepcopy
 
 import pytest
 
+from kohakuterrarium.core import agent_message_history
 from kohakuterrarium.core.agent_message_history import (
     replay_with_settled_tools,
     snapshot_needs_settled_tool_replay,
@@ -68,6 +69,7 @@ def count_indexes(monkeypatch):
 
     monkeypatch.setattr(history, "index_parent_paths", counted)
     monkeypatch.setattr(resume_branch, "index_parent_paths", counted)
+    monkeypatch.setattr(agent_message_history, "index_parent_paths", counted)
     return calls
 
 
@@ -310,8 +312,8 @@ def test_snapshot_tail_never_receives_raw_parent_index(checkpoint, monkeypatch):
     )
     assert result == baseline
     assert baseline_calls == [(1, 3), (1, 3), *calls]
-    assert calls.count((1, 3)) == 2
-    assert calls.count((3,)) == 5
+    assert calls.count((1, 3)) == 1
+    assert calls.count((3,)) == 3
     assert paths[3] == ((1, 1),)
     assert [message["content"] for message in result["messages"]] == ["old", "child"]
     assert observed == [[events[1]]]
