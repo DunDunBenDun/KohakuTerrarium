@@ -24,6 +24,7 @@ from kohakuterrarium.core.snapshot_history import (
 from kohakuterrarium.core.tool_output import render_content_text
 from kohakuterrarium.session.history import (
     compact_covered_event_ids,
+    index_parent_paths,
     normalize_resumable_events,
     normalize_tool_call_events,
     replay_conversation,
@@ -300,8 +301,13 @@ def replay_with_settled_tools(
     resumable: bool = False,
 ) -> list[dict[str, Any]]:
     """Replay a branch, keeping completed results with their live calls."""
-    live_event_ids = select_live_event_ids(events, branch_view=branch_view)
-    covered_ids = compact_covered_event_ids(events, branch_view)
+    parent_paths = index_parent_paths(events)
+    live_event_ids = select_live_event_ids(
+        events, branch_view=branch_view, parent_paths=parent_paths
+    )
+    covered_ids = compact_covered_event_ids(
+        events, branch_view, parent_paths=parent_paths
+    )
     replay_events = include_settled_tool_results(
         events, live_event_ids, covered_event_ids=covered_ids
     )
@@ -328,8 +334,13 @@ def snapshot_needs_settled_tool_replay(
     """Whether the snapshot still lacks a completed result for a live call."""
     if not events:
         return False
-    live_ids = select_live_event_ids(events, branch_view=branch_view)
-    covered_ids = compact_covered_event_ids(events, branch_view)
+    parent_paths = index_parent_paths(events)
+    live_ids = select_live_event_ids(
+        events, branch_view=branch_view, parent_paths=parent_paths
+    )
+    covered_ids = compact_covered_event_ids(
+        events, branch_view, parent_paths=parent_paths
+    )
     projected = include_settled_tool_results(
         events, live_ids, covered_event_ids=covered_ids
     )

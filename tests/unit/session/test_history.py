@@ -3,6 +3,7 @@
 import pytest
 
 from kohakuterrarium.llm.antigravity_format import STATE_KEY, signed_state
+from kohakuterrarium.session import history
 
 from kohakuterrarium.session.history import (
     InvalidBranchViewError,
@@ -67,6 +68,58 @@ class TestPathMatches:
 
 
 class TestReplayConversation:
+    def test_replay_indexes_deduplicated_projection_once(self, monkeypatch):
+        events = [
+            {
+                "event_id": 1,
+                "type": "user_message",
+                "content": "old",
+                "turn_index": 1,
+                "branch_id": 1,
+            },
+            {
+                "event_id": 2,
+                "type": "user_message",
+                "content": "live",
+                "turn_index": 1,
+                "branch_id": 2,
+            },
+            {
+                "event_id": 3,
+                "type": "text_chunk",
+                "content": "answer",
+                "turn_index": 1,
+                "branch_id": 2,
+            },
+            {
+                "event_id": 4,
+                "type": "text_chunk",
+                "content": "answer",
+                "turn_index": 1,
+                "branch_id": 2,
+            },
+            {
+                "event_id": 5,
+                "type": "compact_replace",
+                "summary_text": "summary",
+                "replaced_from_event_id": 2,
+                "replaced_to_event_id": 4,
+                "compact_path": [[1, 2]],
+            },
+        ]
+        indexed = []
+        original = history.index_parent_paths
+
+        def observe(projection):
+            indexed.append([event["event_id"] for event in projection])
+            return original(projection)
+
+        monkeypatch.setattr(history, "index_parent_paths", observe)
+        assert replay_conversation(events) == [
+            {"role": "assistant", "content": "summary"}
+        ]
+        assert indexed == [[1, 2, 3, 5]]
+
     def test_canonical_round_replaces_display_and_precedes_early_tool_result(self):
         canonical = {
             "role": "assistant",

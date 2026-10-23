@@ -382,9 +382,12 @@ def replay_conversation(
     Unknown observability events are ignored.
     """
     events_list = dedupe_adjacent_duplicate_events(events)
+    parent_paths = index_parent_paths(events_list)
     # Nested branch ancestry determines the live event set and the selected
     # branch projection compaction rules are validated against.
-    live_ids = select_live_event_ids(events_list, branch_view=branch_view)
+    live_ids = select_live_event_ids(
+        events_list, branch_view=branch_view, parent_paths=parent_paths
+    )
     provider_ids = {
         evt.get("call_id") or evt.get("job_id"): evt["tool_call_id"]
         for evt in events_list
@@ -392,7 +395,9 @@ def replay_conversation(
         and evt.get("tool_call_id")
         and (not isinstance(evt.get("event_id"), int) or evt["event_id"] in live_ids)
     }
-    replaced_rules = compact_replacement_rules(events_list, branch_view)
+    replaced_rules = compact_replacement_rules(
+        events_list, branch_view, parent_paths=parent_paths
+    )
     # Summaries are emitted where the replaced content sat, not at the
     # compact_replace event's own stream position (a compact runs after the
     # live tail it preserves). pending summaries are ordered by replaced_from

@@ -5,6 +5,7 @@ import copy
 import pytest
 
 from kohakuterrarium.core import agent_message_history as history
+from kohakuterrarium.session import history as session_history
 
 
 def _event(event_id, kind, identity, turn, **extra):
@@ -23,6 +24,31 @@ def _projected(event):
         "_source_event_id": event.get("event_id"),
         "_settled_from_call": True,
     }
+
+
+@pytest.mark.parametrize("operation", ["replay", "snapshot"])
+def test_settled_selection_and_coverage_share_raw_path_index(monkeypatch, operation):
+    events = [
+        _event(1, "user_message", "", 1, branch_id=1, content="start"),
+        _event(2, "tool_call", "job", 1, branch_id=1, name="read", args={}),
+        _event(3, "user_message", "", 2, branch_id=1, content="later"),
+        _event(4, "tool_result", "job", 2, branch_id=1, output="done"),
+    ]
+    indexed = []
+    original = session_history.index_parent_paths
+
+    def observe(projection):
+        indexed.append(tuple(map(id, projection)))
+        return original(projection)
+
+    monkeypatch.setattr(session_history, "index_parent_paths", observe)
+    monkeypatch.setattr(history, "index_parent_paths", observe, raising=False)
+    if operation == "replay":
+        messages = history.replay_with_settled_tools(events, resumable=True)
+        assert any(message.get("content") == "done" for message in messages)
+    else:
+        assert history.snapshot_needs_settled_tool_replay(events, None, snapshot=[])
+    assert indexed.count(tuple(map(id, events))) == 1
 
 
 @pytest.mark.parametrize("count", [16, 64])
