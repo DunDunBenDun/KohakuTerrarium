@@ -1210,10 +1210,26 @@ class TestModulesIntegration:
             before = agent.capture_context()
             replay_before = replay_conversation(store.get_events("modules_agent"))
             assert "worker finished" in str(replay_before)
+            # Persistence elsewhere in the session advances its global cursor
+            # without changing this parent's effective context.
+            _, other_event_id = store.append_event(
+                "other_creature", "assistant_message", {"content": "Independent update"}
+            )
             command = agent.list_user_commands()["btw"]
             context = UserCommandContext(agent=agent)
             started = await command.execute("What did the logs show?", context)
             assert started.success, started.error
+            source = started.data["source"]
+            assert source == {
+                **before.provenance,
+                "event_watermark": source["event_watermark"],
+            }
+            assert before.provenance["event_watermark"] < other_event_id
+            assert (
+                other_event_id
+                <= source["event_watermark"]
+                <= store.max_event_id("modules_agent")
+            )
             side_id = started.data["job_id"]
             side_result = await agent.subagent_manager.wait_for(side_id)
             assert side_result.output == "Side finding: logs are healthy."
@@ -1232,7 +1248,7 @@ class TestModulesIntegration:
             assert "dispatch the worker" not in opened.output
             assert "Private context fork instructions" not in opened.output
             saved_side = store.find_subagent_run(side_id, parent="modules_agent")
-            assert saved_side["meta"]["source"] == before.provenance
+            assert saved_side["meta"]["source"] == source
             assert saved_side["meta"]["audience"] == "user"
             assert saved_side["meta"]["inherited_message_count"] == len(before.messages)
 
@@ -1291,7 +1307,7 @@ class TestModulesIntegration:
                     store.find_subagent_run(side_id, parent="modules_agent")["meta"][
                         "source"
                     ]
-                    == before.provenance
+                    == source
                 )
             finally:
                 await resumed.stop()

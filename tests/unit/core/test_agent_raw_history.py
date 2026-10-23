@@ -1,11 +1,20 @@
-"""Tests for reseating an agent on uncompacted persisted history."""
+"""Tests for canonical raw-history mutation prefixes."""
 
+from copy import deepcopy
 from types import SimpleNamespace
 
-from kohakuterrarium.core.agent_raw_history import reload_raw_prefix_for_target
+import pytest
+
+from kohakuterrarium.core.agent_raw_history import (
+    _accepted_native_prefix,
+    reload_raw_prefix_for_target,
+)
 from kohakuterrarium.core.conversation import Conversation, ConversationConfig
 from kohakuterrarium.core.message_locator import user_message_indices_for_turn
-from kohakuterrarium.session.raw_history import UserMessageSelector
+from kohakuterrarium.session.raw_history import (
+    UserMessageSelector,
+    select_raw_history_prefix,
+)
 
 
 class _Store:
@@ -431,3 +440,114 @@ def test_reload_discards_v2_summary_covering_the_edited_target():
         ("assistant", "R1"),
         ("user", "U2"),
     ]
+
+
+def _accepted_summary_agent():
+    events = [
+        _event(1, "user_message", turn=1, content="original"),
+        {
+            **_event(3, "compact_complete", turn=1),
+            "round": 1,
+            "summary": "accepted summary",
+            "compact_source_path": None,
+            "compact_result_event_ids": [2],
+        },
+        _event(5, "user_message", turn=2, content="target", path=[[1, 1]]),
+    ]
+    agent = _agent(events)
+    agent._turn_index, agent._branch_id = 2, 1
+    agent._parent_branch_path = [(1, 1)]
+    agent._context_cutoff_event_id = 1
+    agent.compact_manager = SimpleNamespace(_compact_count=1, _last_compact_time=42.0)
+    conversation = agent.controller.conversation
+    conversation.truncate_from(1)
+    conversation.append(
+        "assistant",
+        "[Previous context summary (compact round 1)]\n\naccepted summary",
+        metadata={
+            "compact_summary": True,
+            "compact_source_path": None,
+            "compact_result_event_ids": [2],
+        },
+    )
+    conversation.append(
+        "user", "target", metadata={"turn_index": 2, "branch_id": 1, "event_id": 5}
+    )
+    conversation.append("assistant", "discarded response")
+    return agent, events, UserMessageSelector(5, 2, 1)
+
+
+@pytest.mark.parametrize("retained_event_id", [4, 5])
+def test_reload_preserves_detached_unknown_summary_idempotently(retained_event_id):
+    agent, events, selector = _accepted_summary_agent()
+    agent.controller.conversation.get_messages()[2].metadata[
+        "event_id"
+    ] = retained_event_id
+    original = agent.controller.conversation
+    expected = deepcopy(original.to_messages(include_metadata=True)[:3])
+    saved_events = deepcopy(events)
+    for _ in range(2):
+        reload_raw_prefix_for_target(agent, selector, branch_view={1: 1, 2: 1})
+        assert (
+            agent.controller.conversation.to_messages(include_metadata=True) == expected
+        )
+        assert agent.controller.conversation is not original
+        assert agent.controller.conversation.config is original.config
+        assert agent._context_cutoff_event_id == 1
+        assert agent.compact_manager._compact_count == 1
+        assert agent.compact_manager._last_compact_time == 42.0
+    agent.controller.conversation.get_messages()[1].metadata[
+        "compact_result_event_ids"
+    ].append(99)
+    assert original.get_messages()[1].metadata["compact_result_event_ids"] == [2]
+    assert len(original.get_messages()) == 4
+    assert events == saved_events
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "completion",
+        "later_completion",
+        "ambiguous_completion",
+        "summary_text",
+        "summary_metadata",
+        "ancestor_branch",
+        "target_branch",
+        "cutoff",
+        "missing_target",
+        "duplicate_target",
+        "duplicate_persisted_target",
+    ],
+)
+def test_native_prefix_falls_back_without_unambiguous_earlier_evidence(missing):
+    agent, events, selector = _accepted_summary_agent()
+    messages = agent.controller.conversation.get_messages()
+    if missing == "completion":
+        events.pop(1)
+    elif missing == "later_completion":
+        # The target remains after the summary in memory, as with reattachment.
+        events[1]["event_id"] = 6
+        events.sort(key=lambda event: event["event_id"])
+    elif missing == "ambiguous_completion":
+        events.insert(2, {**events[1], "event_id": 4})
+    elif missing == "summary_text":
+        events[1]["summary"] = "different summary"
+    elif missing == "summary_metadata":
+        events[1].pop("compact_source_path")
+    elif missing == "ancestor_branch":
+        agent._parent_branch_path = [(1, 2)]
+    elif missing == "target_branch":
+        agent._branch_id = 2
+    elif missing == "cutoff":
+        agent._context_cutoff_event_id = selector.event_id
+    elif missing == "missing_target":
+        messages[2].metadata.clear()
+    elif missing == "duplicate_target":
+        agent.controller.conversation.append_message(deepcopy(messages[2]))
+    elif missing == "duplicate_persisted_target":
+        events.append({**events[-1], "event_id": 6})
+    prefix = select_raw_history_prefix(events, selector=selector)
+    before = deepcopy(agent.controller.conversation.to_messages(include_metadata=True))
+    assert _accepted_native_prefix(agent, prefix, events) is None
+    assert agent.controller.conversation.to_messages(include_metadata=True) == before

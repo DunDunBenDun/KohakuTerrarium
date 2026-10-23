@@ -73,18 +73,85 @@ def test_repeated_path_full_check_budget(monkeypatch, size, compatible):
             checks += 1
         return original(candidate, selected)
 
-    original_direct = history_selection._matches_before_turn
+    original_direct = history_selection.SelectionCompatibility._path_conflict
 
-    def counted_direct(candidate, turn, selected):
+    def counted_direct(self, candidate):
         nonlocal checks
         if candidate == path:
             checks += 1
-        return original_direct(candidate, turn, selected)
+        return original_direct(self, candidate)
 
     monkeypatch.setattr(history, "_path_matches", counted)
-    monkeypatch.setattr(history_selection, "_matches_before_turn", counted_direct)
+    monkeypatch.setattr(
+        history_selection.SelectionCompatibility, "_path_conflict", counted_direct
+    )
     assert history.select_live_event_ids(events, parent_paths=paths) == expected
     assert checks <= 2, (size, checks)
+
+
+@pytest.mark.parametrize("conflict", [None, 8])
+def test_immutable_path_validation_is_once_per_selection(monkeypatch, conflict):
+    path = tuple((turn, 2 if turn == conflict else 1) for turn in range(1, 17))
+    selected = {turn: 1 for turn in range(1, 17)}
+    compatibility = history_selection.SelectionCompatibility(selected)
+    type_checks = 0
+
+    def counted_type(value):
+        nonlocal type_checks
+        type_checks += 1
+        return type(value)
+
+    monkeypatch.setattr(history_selection, "type", counted_type, raising=False)
+    for turn in range(1, 65):
+        assert compatibility.matches(path, turn) == (
+            conflict is None or conflict >= turn
+        )
+    assert type_checks <= 8 * len(path) + 3 * 64, type_checks
+
+
+def test_different_paths_share_selected_prefix_comparisons(monkeypatch):
+    reads = 0
+    original = history_selection.SelectionCompatibility._pair_conflict
+
+    def counted(self, pair):
+        nonlocal reads
+        reads += 1
+        return original(self, pair)
+
+    monkeypatch.setattr(
+        history_selection.SelectionCompatibility, "_pair_conflict", counted
+    )
+    compatibility = history_selection.SelectionCompatibility(
+        {turn: 1 for turn in range(1, 33)}
+    )
+    for length in range(1, 33):
+        path = tuple((turn, 1) for turn in range(1, length + 1))
+        assert compatibility.matches(path, 100)
+    assert reads <= 32, reads
+
+
+def test_noncanonical_mutable_path_remains_uncached():
+    path = [[1, 1]]
+    compatibility = history_selection.SelectionCompatibility({1: 1})
+    assert compatibility.matches(path, 2)
+    path[0][1] = 2
+    assert not compatibility.matches(path, 2)
+
+
+def test_custom_selection_does_not_read_future_turn_constraints():
+    class FutureReadError(dict):
+        def __getitem__(self, key):
+            if key == 2:
+                raise ValueError("future selection accessed")
+            return super().__getitem__(key)
+
+    compatibility = history_selection.SelectionCompatibility(
+        FutureReadError({1: 1, 2: 1})
+    )
+    assert compatibility.matches(((2, 1),), 1)
+    assert compatibility.matches(((2, 1),), 2)
+    with pytest.raises(ValueError, match="future selection accessed"):
+        compatibility.matches(((2, 1),), 3)
 
 
 class _UnhashableInt(int):

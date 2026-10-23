@@ -3,6 +3,7 @@
 import pytest
 
 from kohakuterrarium.llm.antigravity_format import STATE_KEY, signed_state
+from kohakuterrarium.session import history
 
 from kohakuterrarium.session.history import (
     InvalidBranchViewError,
@@ -66,7 +67,121 @@ class TestPathMatches:
 # ── replay_conversation ───────────────────────────────────────────
 
 
+class TestReplayInjectedInput:
+    @staticmethod
+    def _events(*injected):
+        events = [
+            {
+                "event_id": 1,
+                "type": "user_message",
+                "content": "start",
+                "turn_index": 1,
+                "branch_id": 1,
+            },
+            {"event_id": 2, "type": "assistant_round_start"},
+            {"event_id": 3, "type": "text_chunk", "content": "working"},
+        ]
+        for i, content in enumerate(injected):
+            events.append(
+                {
+                    "event_id": 10 + i,
+                    "type": "user_input_injected",
+                    "content": content,
+                    "turn_index": 1,
+                    "branch_id": 1,
+                }
+            )
+        events += [
+            {"event_id": 20, "type": "assistant_round_start"},
+            {"event_id": 21, "type": "text_chunk", "content": "noted"},
+        ]
+        return events
+
+    def test_mid_turn_message_is_replayed_in_place(self):
+        roles = [
+            (m["role"], m["content"])
+            for m in replay_conversation(self._events("also check X"))
+        ]
+
+        assert roles == [
+            ("user", "start"),
+            ("assistant", "working"),
+            ("user", "also check X"),
+            ("assistant", "noted"),
+        ]
+
+    def test_adjacent_mid_turn_messages_coalesce_like_the_live_turn(self):
+        messages = replay_conversation(self._events("one", "two"))
+
+        assert [m["content"] for m in messages if m["role"] == "user"] == [
+            "start",
+            "one\n\ntwo",
+        ]
+
+    def test_mixed_modal_injection_keeps_every_part(self):
+        image = [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,YQ=="}}
+        ]
+        messages = replay_conversation(self._events("look", image))
+
+        injected = [m for m in messages if m["role"] == "user"][1]["content"]
+        assert {"type": "text", "text": "look"} in injected
+        assert image[0] in injected
+
+
 class TestReplayConversation:
+    def test_replay_indexes_deduplicated_projection_once(self, monkeypatch):
+        events = [
+            {
+                "event_id": 1,
+                "type": "user_message",
+                "content": "old",
+                "turn_index": 1,
+                "branch_id": 1,
+            },
+            {
+                "event_id": 2,
+                "type": "user_message",
+                "content": "live",
+                "turn_index": 1,
+                "branch_id": 2,
+            },
+            {
+                "event_id": 3,
+                "type": "text_chunk",
+                "content": "answer",
+                "turn_index": 1,
+                "branch_id": 2,
+            },
+            {
+                "event_id": 4,
+                "type": "text_chunk",
+                "content": "answer",
+                "turn_index": 1,
+                "branch_id": 2,
+            },
+            {
+                "event_id": 5,
+                "type": "compact_replace",
+                "summary_text": "summary",
+                "replaced_from_event_id": 2,
+                "replaced_to_event_id": 4,
+                "compact_path": [[1, 2]],
+            },
+        ]
+        indexed = []
+        original = history.index_parent_paths
+
+        def observe(projection):
+            indexed.append([event["event_id"] for event in projection])
+            return original(projection)
+
+        monkeypatch.setattr(history, "index_parent_paths", observe)
+        assert replay_conversation(events) == [
+            {"role": "assistant", "content": "summary"}
+        ]
+        assert indexed == [[1, 2, 3, 5]]
+
     def test_canonical_round_replaces_display_and_precedes_early_tool_result(self):
         canonical = {
             "role": "assistant",
@@ -1901,6 +2016,61 @@ class TestStrictBranchView:
 
         live_ids = select_live_event_ids(events, branch_view={1: 99})
         assert live_ids == set()
+
+    @staticmethod
+    def _events_with_trigger_turn():
+        return [
+            {
+                "type": "user_message",
+                "turn_index": 1,
+                "branch_id": 1,
+                "parent_branch_path": [],
+            },
+            {
+                "type": "background_result",
+                "turn_index": 2,
+                "branch_id": 1,
+                "parent_branch_path": [[1, 1]],
+            },
+            {
+                "type": "user_message",
+                "turn_index": 3,
+                "branch_id": 1,
+                "parent_branch_path": [[1, 1], [2, 1]],
+            },
+            {
+                "type": "user_message",
+                "turn_index": 3,
+                "branch_id": 2,
+                "parent_branch_path": [[1, 1], [2, 1]],
+            },
+        ]
+
+    def test_turn_without_user_message_passes_through_to_match_the_live_path(self):
+        events = self._events_with_trigger_turn()
+        live_path = {1: 1, 2: 1, 3: 2}
+
+        assert resolve_branch_view_strict(events, live_path) == live_path
+
+    def test_userless_turn_rejects_a_branch_it_never_had(self):
+        with pytest.raises(InvalidBranchViewError, match="does not exist"):
+            resolve_branch_view_strict(
+                self._events_with_trigger_turn(), {1: 1, 2: 99, 3: 2}
+            )
+
+    def test_partial_view_gains_its_userless_ancestors(self):
+        events = self._events_with_trigger_turn()
+
+        assert resolve_branch_view_strict(events, {3: 2}) == {1: 1, 2: 1, 3: 2}
+
+    def test_descendant_of_trigger_turn_still_validates_its_user_branches(self):
+        events = self._events_with_trigger_turn()
+
+        assert resolve_branch_view_strict(events, {3: 1}) == {1: 1, 2: 1, 3: 1}
+        with pytest.raises(InvalidBranchViewError, match="does not exist"):
+            resolve_branch_view_strict(events, {2: 1, 3: 9})
+        with pytest.raises(InvalidBranchViewError, match="does not exist"):
+            resolve_branch_view_strict(events, {9: 1})
 
     def test_rejects_incompatible_ancestor_and_descendant(self):
         with pytest.raises(InvalidBranchViewError, match="incompatible"):

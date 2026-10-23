@@ -14,7 +14,7 @@ from kohakuterrarium.core.controller import Controller
 from kohakuterrarium.core.controller_context import format_events_for_context
 from kohakuterrarium.core.events import TriggerEvent
 from kohakuterrarium.core.pending_input import pending_id_of
-from kohakuterrarium.llm.message import content_parts_to_dicts
+from kohakuterrarium.llm.message import coalesce_user_contents, content_parts_to_dicts
 from kohakuterrarium.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -37,38 +37,6 @@ def _to_serializable_content(content: Any) -> Any:
     if isinstance(content, list):
         return content_parts_to_dicts(content)
     return content
-
-
-def _coalesce_user_contents(contents: list[Any]) -> Any:
-    """Concatenate N user-input contents into one ``role=user`` message
-    body suitable for ``Conversation.append``.
-
-    Plain-text-only lists join with a blank line between entries so
-    the LLM sees separate messages without ambiguous run-together.
-    Mixed-modal lists (any entry that's a content-parts list) build
-    a single content-parts array with text separators between entries.
-    A single entry passes through verbatim so the common case stays
-    cheap.
-    """
-    if len(contents) == 1:
-        return contents[0]
-    if all(isinstance(c, str) for c in contents):
-        return "\n\n".join(c for c in contents if c)
-    # Mixed-modal — flatten into one content-parts list with text
-    # separators between entries so a downstream provider sees them
-    # as one logical user turn. Entries arrive as dicts (web POST) or
-    # typed ContentPart instances (normalize_content_parts) — round-
-    # trip through ``content_parts_to_dicts`` so neither shape is
-    # silently dropped.
-    parts: list[dict] = []
-    for idx, c in enumerate(contents):
-        if idx > 0:
-            parts.append({"type": "text", "text": "\n\n"})
-        if isinstance(c, str):
-            parts.append({"type": "text", "text": c})
-        elif isinstance(c, list):
-            parts.extend(p for p in content_parts_to_dicts(c) if isinstance(p, dict))
-    return parts
 
 
 class AgentMidTurnMixin:
@@ -142,7 +110,7 @@ class AgentMidTurnMixin:
         if not pairs:
             return 0
 
-        combined = _coalesce_user_contents([c for _, c in pairs])
+        combined = coalesce_user_contents([c for _, c in pairs])
         # A single completion arriving while siblings still run reads
         # as "the others failed" without explicit status — attach the
         # live-jobs line so the model neither re-dispatches nor mourns.

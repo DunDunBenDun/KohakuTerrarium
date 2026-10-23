@@ -1,12 +1,17 @@
-"""Raw persisted-history helpers for message branch mutations."""
+"""Restore persisted prefixes for canonical user-message mutations."""
 
+from copy import deepcopy
 from typing import Any, Protocol
 
 from kohakuterrarium.core.agent_message_history import (
     replay_with_settled_tools,
     snapshot_needs_settled_tool_replay,
 )
-from kohakuterrarium.core.compact_branch import compact_rule_from_event
+from kohakuterrarium.core.branch_continuation import live_branch_path
+from kohakuterrarium.core.compact_branch import (
+    compact_rule_from_event,
+    is_summary_message,
+)
 from kohakuterrarium.core.conversation import Conversation
 from kohakuterrarium.core.snapshot_history import (
     prepare_snapshot,
@@ -19,6 +24,7 @@ from kohakuterrarium.session.history import (
     replay_conversation,
 )
 from kohakuterrarium.session.raw_history import (
+    RawHistoryPrefix,
     UserMessageSelector,
     select_raw_history_prefix,
 )
@@ -50,13 +56,83 @@ def raw_target_content(
     return prefix.target.get("content", "")
 
 
+def _accepted_native_prefix(
+    agent: RawHistoryAgent, prefix: RawHistoryPrefix, events: list[dict]
+) -> Conversation | None:
+    """Detach accepted context when every retained summary predates the target."""
+    target = prefix.target
+    turn, branch, event_id = (
+        target["turn_index"],
+        target["branch_id"],
+        target["event_id"],
+    )
+    if getattr(agent, "_context_cutoff_event_id", 0) >= event_id:
+        return None
+    if {t: b for t, b in live_branch_path(agent).items() if t <= turn} != {
+        t: b for t, b in prefix.branch_view.items() if t <= turn
+    }:
+        return None
+    if (
+        sum(
+            event.get("type") == "user_message"
+            and event.get("turn_index") == turn
+            and event.get("branch_id") == branch
+            for event in events
+        )
+        != 1
+    ):
+        return None
+    conversation = agent.controller.conversation
+    messages = conversation.get_messages()
+    matches = [
+        i
+        for i, message in enumerate(messages)
+        if message.role == "user"
+        and message.metadata.get("kind") != "tool_results"
+        and message.metadata.get("turn_index") == turn
+        and message.metadata.get("branch_id") == branch
+    ]
+    if len(matches) != 1:
+        return None
+    index = matches[0]
+    summaries = [message for message in messages[:index] if is_summary_message(message)]
+    if not summaries:
+        return None
+    for summary in summaries:
+        completions = [
+            event
+            for event in events
+            if event.get("type") == "compact_complete"
+            and type(event.get("round")) is int
+            and event["round"] > 0
+            and isinstance(event.get("summary"), str)
+            and summary.content
+            == (
+                f"[Previous context summary (compact round {event['round']})]"
+                f"\n\n{event['summary']}"
+            )
+            and all(
+                key in summary.metadata
+                and key in event
+                and summary.metadata[key] == event[key]
+                for key in ("compact_source_path", "compact_result_event_ids")
+            )
+        ]
+        if len(completions) != 1 or completions[0]["event_id"] >= event_id:
+            return None
+    detached = deepcopy(conversation)
+    detached.config = conversation.config
+    detached.truncate_from(index + 1)
+    return detached
+
+
 def reload_raw_prefix_for_target(
     agent: RawHistoryAgent,
     target: UserMessageSelector,
     *,
     branch_view: dict[int, int] | None = None,
 ) -> None:
-    """Restore the target prefix using only summaries with unchanged inputs."""
+    """Restore accepted earlier context, otherwise replay unchanged summary inputs."""
     if agent.session_store is None:
         raise ValueError("raw persisted history is unavailable")
     current_conversation = agent.controller.conversation
@@ -66,6 +142,17 @@ def reload_raw_prefix_for_target(
         selector=target,
         branch_view=branch_view,
     )
+    native = _accepted_native_prefix(agent, prefix, all_events)
+    if native is not None:
+        agent.controller.conversation = native
+        agent._turn_index = target.turn_index
+        agent._branch_id = target.branch_id
+        agent._parent_branch_path = [
+            (turn, branch)
+            for turn, branch in prefix.branch_view.items()
+            if 0 < turn < target.turn_index and branch > 0
+        ]
+        return
     target_path: set[tuple[int, int]] = {
         (turn, branch)
         for turn, branch in prefix.branch_view.items()

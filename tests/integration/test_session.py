@@ -31,6 +31,7 @@ import pytest
 
 from kohakuterrarium.bootstrap import agent_init as _agent_init
 from kohakuterrarium.bootstrap import llm as _bootstrap_llm
+from kohakuterrarium.core import agent_message_history as _message_history_mod
 from kohakuterrarium.core.agent import Agent
 from kohakuterrarium.core.branch_continuation import selected_branch_view
 from kohakuterrarium.core.events import create_user_input_event
@@ -867,11 +868,18 @@ class TestSessionIntegration:
         finally:
             fallback.close(update_status=False)
         replay_counts = []
+        replay_indexes = []
+        replaying = False
         replay = _resume_branch_mod.replay_with_settled_tools
 
         def observe_replay(events, **kwargs):
+            nonlocal replaying
             replay_counts.append(len(events))
-            return replay(events, **kwargs)
+            replaying = True
+            try:
+                return replay(events, **kwargs)
+            finally:
+                replaying = False
 
         preparing = False
         preparation_indexes = []
@@ -888,6 +896,8 @@ class TestSessionIntegration:
         def observe_index(events):
             if preparing:
                 preparation_indexes.append([event.get("event_id") for event in events])
+            if replaying:
+                replay_indexes.append(tuple(map(id, events)))
             return index(events)
 
         def observe_prepare(*args, **kwargs):
@@ -905,6 +915,7 @@ class TestSessionIntegration:
             tracing.setattr(_resume_mod, "prepare_saved_snapshot", observe_prepare)
             tracing.setattr(_resume_branch_mod, "index_parent_paths", observe_index)
             tracing.setattr(_history_mod, "index_parent_paths", observe_index)
+            tracing.setattr(_message_history_mod, "index_parent_paths", observe_index)
             tracing.setattr(SessionStore, "get_events", observe_event_read)
             fallback_agent, fallback_store = await resume_agent_async(session_path)
         try:
@@ -935,6 +946,8 @@ class TestSessionIntegration:
             assert fallback_agent._pending_resume_events == expected_pending
             raw = fallback_store.get_events("scribe")
             assert replay_counts == [len(raw)]
+            assert len(replay_indexes) == 2
+            assert replay_indexes[0] != replay_indexes[1]
             assert preparation_indexes == [[event["event_id"] for event in raw]]
             continuation_llm = ScriptedLLM(["continued after recovery"])
             fallback_agent.llm = fallback_agent.controller.llm = continuation_llm

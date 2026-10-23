@@ -583,3 +583,92 @@ def test_prepare_snapshot_summary_lineage_matrix(
     )
     res = _prepare(store, _EVENTS, selected=selected, before_turn=before_turn)
     assert (res is not None) == expect_ok
+
+
+def _trigger_turn_events() -> list[dict]:
+    """Turn 1 is typed; turn 2 is opened by a channel trigger (no user_message)."""
+    return [
+        {"event_id": 1, "type": "processing_start", "turn_index": 0, "branch_id": 0},
+        {
+            "event_id": 2,
+            "type": "user_message",
+            "content": "u1",
+            "turn_index": 1,
+            "branch_id": 1,
+        },
+        {
+            "event_id": 3,
+            "type": "text",
+            "content": "a1",
+            "turn_index": 1,
+            "branch_id": 1,
+        },
+        {
+            "event_id": 4,
+            "type": "trigger_fired",
+            "turn_index": 2,
+            "branch_id": 1,
+            "parent_branch_path": [[1, 1]],
+        },
+        {
+            "event_id": 5,
+            "type": "text",
+            "content": "a2",
+            "turn_index": 2,
+            "branch_id": 1,
+            "parent_branch_path": [[1, 1]],
+        },
+    ]
+
+
+_TRIGGER_TURN_MSGS = [
+    {
+        "role": "user",
+        "content": "summary of earlier work",
+        "metadata": {"turn_index": 1, "branch_id": 1},
+    },
+    {"role": "assistant", "content": "a1"},
+    {
+        "role": "user",
+        "content": "[channel] ping",
+        "metadata": {"turn_index": 2, "branch_id": 1},
+    },
+    {"role": "assistant", "content": "a2"},
+]
+
+
+def test_checkpoint_through_a_trigger_opened_turn_is_restored(
+    store: SessionStore,
+) -> None:
+    store.save_branch_snapshot(
+        "alice",
+        copy.deepcopy(_TRIGGER_TURN_MSGS),
+        branch={"turn_index": 2, "branch_id": 1, "parent_branch_path": [[1, 1]]},
+        watermark=5,
+    )
+
+    prepared = _prepare(store, _trigger_turn_events(), selected={0: 0, 1: 1, 2: 1})
+
+    assert prepared is not None
+    assert [m["content"] for m in prepared["messages"]] == [
+        m["content"] for m in _TRIGGER_TURN_MSGS
+    ]
+
+
+def test_freshness_uses_the_store_counter_not_a_full_event_scan(
+    store: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store.append_event(
+        "alice", "user_message", {"content": "u1"}, turn_index=1, branch_id=1
+    )
+    store.append_event("bob", "text", {"content": "later"}, turn_index=1, branch_id=1)
+    alice_events = store.get_events("alice")
+
+    def forbidden() -> None:
+        raise AssertionError("freshness must not scan every agent's events")
+
+    monkeypatch.setattr(store, "get_all_events", forbidden)
+
+    assert store.global_max_event_id == 2
+    assert snapshot_history._fresh(store, "alice", alice_events, 2) is True
+    assert snapshot_history._fresh(store, "alice", alice_events, 3) is False
