@@ -66,6 +66,68 @@ class TestPathMatches:
 # ── replay_conversation ───────────────────────────────────────────
 
 
+class TestReplayInjectedInput:
+    @staticmethod
+    def _events(*injected):
+        events = [
+            {
+                "event_id": 1,
+                "type": "user_message",
+                "content": "start",
+                "turn_index": 1,
+                "branch_id": 1,
+            },
+            {"event_id": 2, "type": "assistant_round_start"},
+            {"event_id": 3, "type": "text_chunk", "content": "working"},
+        ]
+        for i, content in enumerate(injected):
+            events.append(
+                {
+                    "event_id": 10 + i,
+                    "type": "user_input_injected",
+                    "content": content,
+                    "turn_index": 1,
+                    "branch_id": 1,
+                }
+            )
+        events += [
+            {"event_id": 20, "type": "assistant_round_start"},
+            {"event_id": 21, "type": "text_chunk", "content": "noted"},
+        ]
+        return events
+
+    def test_mid_turn_message_is_replayed_in_place(self):
+        roles = [
+            (m["role"], m["content"])
+            for m in replay_conversation(self._events("also check X"))
+        ]
+
+        assert roles == [
+            ("user", "start"),
+            ("assistant", "working"),
+            ("user", "also check X"),
+            ("assistant", "noted"),
+        ]
+
+    def test_adjacent_mid_turn_messages_coalesce_like_the_live_turn(self):
+        messages = replay_conversation(self._events("one", "two"))
+
+        assert [m["content"] for m in messages if m["role"] == "user"] == [
+            "start",
+            "one\n\ntwo",
+        ]
+
+    def test_mixed_modal_injection_keeps_every_part(self):
+        image = [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,YQ=="}}
+        ]
+        messages = replay_conversation(self._events("look", image))
+
+        injected = [m for m in messages if m["role"] == "user"][1]["content"]
+        assert {"type": "text", "text": "look"} in injected
+        assert image[0] in injected
+
+
 class TestReplayConversation:
     def test_canonical_round_replaces_display_and_precedes_early_tool_result(self):
         canonical = {
