@@ -216,6 +216,11 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
         self._event_seq[agent] = seq + 1
         return seq
 
+    @property
+    def global_max_event_id(self) -> int:
+        """Largest event id written to this store across every agent."""
+        return self._global_event_id
+
     def _next_global_event_id(self) -> int:
         """Get and increment the global monotonic event id counter."""
         self._global_event_id += 1

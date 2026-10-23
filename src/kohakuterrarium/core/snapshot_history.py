@@ -33,6 +33,11 @@ def _fresh(store: Any, namespace: str, events: list[dict], watermark: int) -> bo
     latest = max((event.get("event_id", 0) for event in events), default=0)
     if watermark <= latest:
         return True
+    # This namespace ends below the watermark, so another agent reached it
+    # exactly when the store-wide maximum did.
+    store_max = getattr(store, "global_max_event_id", None)
+    if type(store_max) is int:
+        return store_max >= watermark
     getter = getattr(store, "get_all_events", None)
     if not callable(getter):
         return False
@@ -200,15 +205,19 @@ def prepare_snapshot(
         records = load_records(store, namespace)
     if not records:
         return None
+    # Every recorded turn counts: trigger- and background-opened turns have no
+    # user_message yet still sit on a checkpoint's branch path.
     raw_pairs = {
         (event.get("turn_index"), event.get("branch_id"))
         for event in events
-        if event.get("type") == "user_message"
+        if type(event.get("turn_index")) is int and type(event.get("branch_id")) is int
     }
     live_ids = select_live_event_ids(
         events, branch_view=selected, parent_paths=parent_paths
     )
     covered = compact_covered_event_ids(events, selected, parent_paths=parent_paths)
+    # Checkpoint paths record only real turns; pre-turn events sit at (0, 0).
+    path_view = {t: b for t, b in selected.items() if t > 0 and b > 0}
     candidates, repairs = [], []
     for record in records:
         if not set(map(tuple, record["path"])).issubset(raw_pairs) or not _fresh(
@@ -216,20 +225,20 @@ def prepare_snapshot(
         ):
             continue
         cutoff = record.get("context_cutoff_event_id", 0)
-        boundary_turn = _boundary_turn(record, events, selected, before_turn)
+        boundary_turn = _boundary_turn(record, events, path_view, before_turn)
         if cutoff:
             if boundary_turn is None:
                 continue
             repairs.append((boundary_turn, record["watermark"], cutoff, record))
         prefix = _prefix(
-            record, selected, before_turn, empty_boundary=boundary_turn is not None
+            record, path_view, before_turn, empty_boundary=boundary_turn is not None
         )
         if prefix is None:
             continue
         messages, last_turn = prefix
         last_turn = max(last_turn, boundary_turn or 0)
         whole = before_turn is None and record["path"] == sorted(
-            [t, b] for t, b in selected.items()
+            [t, b] for t, b in path_view.items()
         )
         if whole and not any(
             message["role"] != "system" for message in record["messages"]
