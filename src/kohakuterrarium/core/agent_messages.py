@@ -269,8 +269,8 @@ class AgentMessagesMixin:
         await self._wait_for_history_finalization()
         self._ensure_history_mutation_idle()
         self._ensure_rerun_available()
-        # Canonical persisted targets reconstruct original context before
-        # mutating in-memory state, deliberately bypassing compact snapshots.
+        # Canonical targets reuse accepted context when applicable,
+        # otherwise reconstruct their prefix before the edit.
         if target is not None:
             reload_raw_prefix_for_target(self, target, branch_view=branch_view)
             turn_index = target.turn_index
