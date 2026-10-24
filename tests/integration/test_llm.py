@@ -48,6 +48,7 @@ from websockets import serve
 from kohakuterrarium import Terrarium
 from kohakuterrarium.errors import MediaReferenceError
 from kohakuterrarium.core.agent_budget_recovery import apply_context_repair
+from kohakuterrarium.core.config_types import AgentConfig, ToolConfigItem
 from kohakuterrarium.core.controller import Controller, ControllerConfig
 from kohakuterrarium.core.conversation import Conversation
 from kohakuterrarium.core.events import create_user_input_event
@@ -133,6 +134,7 @@ from kohakuterrarium.llm.turn_segments import KT_ASSISTANT_SEGMENTS
 from kohakuterrarium.session.store import SessionStore
 from tests.helpers.anthropic_stream import ANSWER as ANTHROPIC_ANSWER
 from tests.helpers.anthropic_stream import anthropic_provider
+from tests.helpers.parallel_tool_stream import RECORDED_CALLS, parallel_tool_provider
 from tests.helpers.reasoning_stream import (
     ANSWER,
     REASONING_PIECES,
@@ -2778,7 +2780,7 @@ class TestLlmIntegration:
                 assert len(submissions) == 5
 
     @pytest.mark.timeout(60)
-    async def test_dual_form_reasoning_stream_workflow(self):
+    async def test_dual_form_reasoning_stream_workflow(self, tmp_path):
         """A provider streaming reasoning in two forms per delta, end to end.
 
         Real ``OpenAIProvider`` over an in-memory HTTP stream: the displayed
@@ -2810,6 +2812,40 @@ class TestLlmIntegration:
             {"type": "reasoning.text", "index": 0, "text": full_text}
         ]
         assert KT_ASSISTANT_SEGMENTS not in echoed
+        await provider.close()
+
+        (tmp_path / "TASK.txt").write_text("PARALLEL_OK", encoding="utf-8")
+        (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
+        parallel_requests = []
+        config = AgentConfig(
+            name="parallel",
+            tools=[ToolConfigItem(name="glob"), ToolConfigItem(name="read")],
+            fork_enabled=False,
+        )
+        async with Terrarium() as engine:
+            worker = await engine.add_creature(
+                config,
+                llm=await parallel_tool_provider(parallel_requests),
+                pwd=tmp_path,
+                io="headless",
+                session=False,
+            )
+            assert (await worker.run("inspect files", timeout=10)).text == "PARALLEL_OK"
+            serialized = worker.agent.controller.conversation.to_json()
+            snapshot = worker.agent.controller.conversation.snapshot_messages()
+            assistant = next(m for m in snapshot if m.get("tool_calls"))
+            assert [c["id"] for c in assistant["tool_calls"]] == [
+                c["id"] for c in RECORDED_CALLS
+            ]
+            assert assistant["_kt_tool_call_extra"] == {
+                RECORDED_CALLS[0]["id"]: RECORDED_CALLS[0]["extra_content"]
+            }
+            assert (await worker.run("continue", timeout=10)).text == "PARALLEL_OK"
+            worker.agent.controller.conversation.clear()
+            for message in Conversation.from_json(serialized).get_messages():
+                worker.agent.controller.conversation.append_message(message)
+            assert (await worker.run("restored", timeout=10)).text == "PARALLEL_OK"
+        assert len(parallel_requests) == 4
 
     @pytest.mark.timeout(60)
     async def test_anthropic_sampling_parameters_workflow(self):
