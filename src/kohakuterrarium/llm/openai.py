@@ -45,6 +45,7 @@ from kohakuterrarium.llm.openai_sanitize import (
     strip_kt_extras,
     strip_surrogates,
 )
+from kohakuterrarium.llm.openai_tool_calls import ToolCallAccumulator
 from kohakuterrarium.llm.stream_replay import ReplayFilter
 from kohakuterrarium.llm.turn_segments import TurnSegmentsBuilder
 from kohakuterrarium.llm.openai_ws import stream_ws_turn
@@ -451,7 +452,8 @@ class OpenAIProvider(BaseLLMProvider):
         )
 
         self._last_usage = {}
-        pending_calls: dict[int, dict[str, Any]] = {}
+        tool_call_stream = ToolCallAccumulator()
+        pending_calls = tool_call_stream.calls
         segments = TurnSegmentsBuilder()
         reasoning_text = ""
         reasoning_details: list[Any] = []
@@ -475,23 +477,11 @@ class OpenAIProvider(BaseLLMProvider):
             delta = chunk.choices[0].delta
 
             if delta.tool_calls:
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    segments.append_tool_call_ref(tc_delta.id or "", idx)
-                    if idx not in pending_calls:
-                        pending_calls[idx] = {"id": "", "name": "", "arguments": ""}
-                    if tc_delta.id:
-                        pending_calls[idx]["id"] = tc_delta.id
-                    extra = tool_call_extra(tc_delta)
-                    if extra:
-                        pending_calls[idx]["extra_content"] = extra
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            pending_calls[idx]["name"] = tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            pending_calls[idx][
-                                "arguments"
-                            ] += tc_delta.function.arguments
+                for position, tc_delta in enumerate(delta.tool_calls):
+                    slot = tool_call_stream.append(
+                        tc_delta, position, len(delta.tool_calls)
+                    )
+                    segments.append_tool_call_ref(pending_calls[slot]["id"], slot)
 
             # Stateful reasoning fields arrive through the SDK's untyped extra surface.
             if self.echo_reasoning:
