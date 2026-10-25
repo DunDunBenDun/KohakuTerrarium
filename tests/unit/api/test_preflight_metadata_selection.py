@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 import kohakuterrarium.api.routes.persistence.preflight_metadata as preflight_metadata
 import kohakuterrarium.api.routes.persistence.resume as route
 import kohakuterrarium.api.routes.persistence.resume_cluster as cluster
-import kohakuterrarium.session.metadata_candidate as candidate
+import kohakuterrarium.session.readonly as readonly_mod
 import kohakuterrarium.session.version as version
 from kohakuterrarium.api.app import create_app
 from kohakuterrarium.api.deps import get_service_factory
@@ -29,6 +29,7 @@ from kohakuterrarium.session.memory import SessionMemory
 from kohakuterrarium.session.readonly import read_session_meta
 from kohakuterrarium.session.resource_gate import GATE, ResourceReleaseError, try_fast
 from kohakuterrarium.session.store import SessionStore
+from kohakuterrarium.session.vault_handles import dispose
 from kohakuterrarium.terrarium.graph_manifest import MANIFEST_KEY
 
 
@@ -193,33 +194,23 @@ def test_default_reader_falls_back_for_live_resources_then_returns_to_fast(
 @pytest.mark.parametrize("fault", ["source", "decoder"])
 def test_real_cleanup_failure_reaches_http_without_retry(setup, monkeypatch, fault):
     app, client, path, counts, _ = setup
-    original_connect = candidate.sqlite3.connect
-    original_decoder = candidate.KVault
     held = []
 
-    class Connection(candidate.sqlite3.Connection):
-        def close(self):
-            raise OSError("source release failed")
+    def unreleased(handle):
+        held.append(handle)
+        raise OSError("source release failed")
 
-    def connect(*args, **kwargs):
-        conn = original_connect(
-            *args, factory=Connection, check_same_thread=False, **kwargs
-        )
-        held.append(conn)
-        return conn
-
-    class Decoder(original_decoder):
-        def close(self):
-            raise OSError("decoder release failed")
+    def undecodable(key):
+        raise readonly_mod.MetaDecodeError(f"undecodable key {key!r}")
 
     def faulted_candidate(path, *, eligible=False):
         assert eligible
         counts["selected"] += 1
         with monkeypatch.context() as scoped:
             if fault == "source":
-                scoped.setattr(candidate.sqlite3, "connect", connect)
+                scoped.setattr(readonly_mod, "dispose", unreleased)
             else:
-                scoped.setattr(candidate, "KVault", Decoder)
+                scoped.setattr(readonly_mod, "_strict_key", undecodable)
             return read_metadata_candidate(path, eligible=eligible)
 
     def service():
@@ -245,8 +236,8 @@ def test_real_cleanup_failure_reaches_http_without_retry(setup, monkeypatch, fau
         else:
             assert not GATE.snapshot(path).registered
     finally:
-        for connection in held:
-            candidate.sqlite3.Connection.close(connection)
+        for handle in held:
+            dispose(handle)
 
 
 @pytest.mark.parametrize("fail_on", [1, 2])

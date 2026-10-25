@@ -1,7 +1,6 @@
 """Actual ASGI cancellation preserves in-flight candidate resource ownership."""
 
 import asyncio
-import sqlite3
 import threading
 from contextlib import closing
 
@@ -9,6 +8,7 @@ import httpx
 import pytest
 
 import kohakuterrarium.session.metadata_candidate as candidate
+import kohakuterrarium.session.readonly as readonly_mod
 from kohakuterrarium.api.app import create_app
 from kohakuterrarium.api.routes.persistence.preflight_metadata import (
     local_metadata_reader,
@@ -27,26 +27,22 @@ async def test_http_cancel_keeps_source_until_worker_close(tmp_path, monkeypatch
     with closing(SessionStore(path)) as store:
         store.init_meta("saved", "agent", "", str(tmp_path), ["alice"])
     entered, release, closed, done = (threading.Event() for _ in range(4))
-    real_connect = sqlite3.connect
+    real_dispose = readonly_mod.dispose
     errors = []
     result = []
 
-    class Connection(sqlite3.Connection):
-        def close(self):
-            entered.set()
-            if not release.wait(10):
-                raise TimeoutError("test source not released")
-            super().close()
-            closed.set()
+    def gated_dispose(handle):
+        entered.set()
+        if not release.wait(10):
+            raise TimeoutError("test source not released")
+        released = real_dispose(handle)
+        closed.set()
+        return released
 
     def selected(path):
         try:
             with monkeypatch.context() as scoped:
-                scoped.setattr(
-                    candidate.sqlite3,
-                    "connect",
-                    lambda *a, **kw: real_connect(*a, factory=Connection, **kw),
-                )
+                scoped.setattr(readonly_mod, "dispose", gated_dispose)
                 outcome = candidate.read_metadata_candidate(path, eligible=True)
                 result.append(outcome)
                 return outcome.meta
