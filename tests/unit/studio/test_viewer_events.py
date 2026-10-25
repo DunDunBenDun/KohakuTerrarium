@@ -5,6 +5,7 @@ from contextlib import closing
 import pytest
 from kohakuvault import KVault
 
+import kohakuterrarium.session.vault_io as vault_io
 from kohakuterrarium.errors import NotFoundError
 from kohakuterrarium.session.store import SessionStore
 from kohakuterrarium.studio.persistence.viewer.events import (
@@ -45,6 +46,31 @@ def _store(tmp_path) -> SessionStore:
     return SessionStore(str(tmp_path / "s.kohakutr"))
 
 
+def _count_event_reads(monkeypatch, store, bad=frozenset()):
+    """Record every event key read through ``get_many``; ``bad`` keys raise."""
+    reads = []
+    original_many, original_item = KVault.get_many, KVault.__getitem__
+
+    def text(key):
+        return key.decode() if isinstance(key, bytes) else key
+
+    def many(table, keys, *args, **kwargs):
+        if table is store.events:
+            reads.extend(text(key) for key in keys)
+            if bad.intersection(text(key) for key in keys):
+                raise ValueError("batch holds a bad value")
+        return original_many(table, keys, *args, **kwargs)
+
+    def item(table, key):
+        if table is store.events and text(key) in bad:
+            raise ValueError("bad:" + text(key))
+        return original_item(table, key)
+
+    monkeypatch.setattr(KVault, "get_many", many)
+    monkeypatch.setattr(KVault, "__getitem__", item)
+    return reads
+
+
 def _page(store, **overrides):
     options = dict(
         agent="alice",
@@ -66,15 +92,12 @@ class TestBuildEventsPayload:
             for index in range(401):
                 store.append_event("alice", "x", {"ts": index}, turn_index=index)
             expected = store.get_events("alice")
-            reads = []
-            original = KVault.__getitem__
-
-            def read(table, key):
-                if table is store.events:
-                    reads.append(key)
-                return original(table, key)
-
-            monkeypatch.setattr(KVault, "__getitem__", read)
+            assert len(_page(store, limit=1)["events"]) == 1
+            reads = _count_event_reads(monkeypatch, store)
+            _page(store, limit=1)
+            assert len(reads) == vault_io.FIRST_READ_CHUNK
+            reads.clear()
+            monkeypatch.setattr(vault_io, "READ_CHUNK", 1)
             first = _page(store)
             assert first["events"] == expected[:200]
             assert first["next_cursor"] == 200
@@ -132,25 +155,17 @@ class TestBuildEventsPayload:
             for _ in range(5):
                 store.append_event("alice", "x", {})
             store.flush()
-            original = KVault.__getitem__
-            reads = []
-
-            def read(table, key):
-                if table is store.events:
-                    text = key.decode() if isinstance(key, bytes) else key
-                    reads.append(text)
-                    if text in {"alice:e000000", "alice:e000003"}:
-                        raise ValueError("bad:" + text)
-                return original(table, key)
-
-            monkeypatch.setattr(KVault, "__getitem__", read)
+            monkeypatch.setattr(vault_io, "READ_CHUNK", 1)
+            reads = _count_event_reads(
+                monkeypatch, store, bad=frozenset({"alice:e000000", "alice:e000003"})
+            )
             page = _page(store, limit=2)
             assert [ev["event_id"] for ev in page["events"]] == [2, 3]
             assert page["next_cursor"] == 3
             assert reads == [f"alice:e{index:06d}" for index in range(3)]
             assert "Failed to read event" in caplog.text
             assert {record.name for record in caplog.records} == {
-                "kohakuterrarium.session.store"
+                "kohakuterrarium.session.vault_io"
             }
             assert "bad:alice:e000000" in caplog.text
             assert "bad:alice:e000003" not in caplog.text

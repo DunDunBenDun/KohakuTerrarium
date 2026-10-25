@@ -43,6 +43,7 @@ import numpy as np
 import pytest
 from kohakuvault import KVault
 
+import kohakuterrarium.session.vault_io as vault_io
 from kohakuterrarium.errors import (
     InvalidRequestError,
     NotFoundError,
@@ -616,15 +617,16 @@ class TestStudioIntegration:
                 assert "user_input" in event_types
                 assert "text_chunk" in event_types
                 event_reads = []
-                original_read = KVault.__getitem__
+                original_read = KVault.get_many
 
-                def read_event_value(table, key):
+                def read_event_values(table, keys, *args, **kwargs):
                     if table is store.events:
-                        event_reads.append(key)
-                    return original_read(table, key)
+                        event_reads.extend(keys)
+                    return original_read(table, keys, *args, **kwargs)
 
                 with monkeypatch.context() as counters:
-                    counters.setattr(KVault, "__getitem__", read_event_value)
+                    counters.setattr(vault_io, "READ_CHUNK", 1)
+                    counters.setattr(KVault, "get_many", read_event_values)
                     cursor = None
                     for index in range(2):
                         event_reads.clear()

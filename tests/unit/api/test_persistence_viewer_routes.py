@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from kohakuvault import KVault
 from fastapi.testclient import TestClient
 
+import kohakuterrarium.session.vault_io as vault_io
 from kohakuterrarium.session.store import SessionStore
 from kohakuterrarium.api.routes.persistence import subagents as subagents_mod
 from kohakuterrarium.api.routes.persistence import viewer as viewer_mod
@@ -427,16 +428,16 @@ async def test_cancelled_event_page_retains_worker_store(tmp_path, monkeypatch, 
     entered, closing, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
     release = threading.Event()
     owner, payloads, reads, order = [], [], [], []
-    original_read, original_close = KVault.__getitem__, SessionStore.close
+    original_read, original_close = KVault.get_many, SessionStore.close
 
-    def read(table, key):
+    def read(table, keys, *args, **kwargs):
         if owner and table is owner[0].events and not payloads:
             reads.append(threading.get_ident())
             assert not closed.is_set()
             if len(reads) == 1:
                 loop.call_soon_threadsafe(entered.set)
                 assert release.wait(5), "event read was not released"
-        return original_read(table, key)
+        return original_read(table, keys, *args, **kwargs)
 
     def close(target, *args, **kwargs):
         if owner and target is owner[0]:
@@ -471,7 +472,8 @@ async def test_cancelled_event_page_retains_worker_store(tmp_path, monkeypatch, 
         order.append("append")
         store.append_event("alice", "x", {"content": "after page"})
 
-    monkeypatch.setattr(KVault, "__getitem__", read)
+    monkeypatch.setattr(vault_io, "READ_CHUNK", 1)
+    monkeypatch.setattr(KVault, "get_many", read)
     monkeypatch.setattr(SessionStore, "close", close)
     task = asyncio.create_task(viewer_mod._build_single(engine, "graph", path, build))
     close_task = None

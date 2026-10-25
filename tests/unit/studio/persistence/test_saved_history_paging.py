@@ -158,6 +158,7 @@ def test_index_viewer_agents_are_key_only_and_do_not_expand_history_targets(
     reads = []
     original_get = KVault.get
     original_item = KVault.__getitem__
+    original_many = KVault.get_many
 
     def get(vault, key, *args, **kwargs):
         if vault is store.events:
@@ -169,8 +170,14 @@ def test_index_viewer_agents_are_key_only_and_do_not_expand_history_targets(
             reads.append(key)
         return original_item(vault, key)
 
+    def many(vault, keys, *args, **kwargs):
+        if vault is store.events:
+            reads.extend(keys)
+        return original_many(vault, keys, *args, **kwargs)
+
     monkeypatch.setattr(KVault, "get", get)
     monkeypatch.setattr(KVault, "__getitem__", item)
+    monkeypatch.setattr(KVault, "get_many", many)
     index = history_index_from_store(store, "discovery")
     assert index["viewer_agents"] == [attached, "alice", "bob", "worker"]
     assert index["targets"] == ["alice", "bob", "worker", "ch:ops"]
