@@ -24,6 +24,14 @@ def _store(tmp_path, name="s.kohakutr") -> SessionStore:
     return SessionStore(str(tmp_path / name))
 
 
+def _fd_is_open(fd: int) -> bool:
+    try:
+        os.fstat(fd)
+    except OSError:
+        return False
+    return True
+
+
 def test_get_events_since_event_id_filters(tmp_path):
     path = tmp_path / "since.kohakutr"
     store = SessionStore(str(path))
@@ -1522,24 +1530,38 @@ class TestPartialOpenCleanup:
         path = tmp_path / "s.kohakutr"
         SessionStore(path).close()
 
-        def open_fds() -> int:
-            return len(os.listdir("/dev/fd"))
-
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        limit = len(os.listdir("/dev/fd")) + 64
+
+        def open_fds() -> int:
+            # fstat needs no free descriptor, so counting works at zero headroom.
+            return sum(1 for fd in range(limit) if _fd_is_open(fd))
+
         burned: list[int] = []
-        limit = open_fds() + 40
+        failures = 0
         resource.setrlimit(resource.RLIMIT_NOFILE, (limit, hard))
         try:
             gc.collect()
-            while open_fds() < limit - 12:
-                burned.append(os.open(os.devnull, os.O_RDONLY))
-            fds_before = open_fds()
-            threads_before = threading.active_count()
-            with pytest.raises(Exception):
-                SessionStore(path)
-            gc.collect()
-            assert open_fds() == fds_before
-            assert threading.active_count() == threads_before
+            while True:
+                try:
+                    burned.append(os.open(os.devnull, os.O_RDONLY))
+                except OSError:
+                    break
+            while burned:
+                fds_before = open_fds()
+                threads_before = threading.active_count()
+                try:
+                    store = SessionStore(path)
+                except Exception:
+                    failures += 1
+                    gc.collect()
+                    assert open_fds() <= fds_before
+                    assert threading.active_count() <= threads_before
+                    os.close(burned.pop())
+                    continue
+                store.close()
+                break
+            assert failures > 0 and burned
         finally:
             for fd in burned:
                 os.close(fd)
