@@ -11,19 +11,14 @@ logger = get_logger(__name__)
 
 
 def insert_fts_rows(fts: Any, rows: list[tuple[str, dict]]) -> None:
-    """Insert ``(text, meta)`` rows; a failed batch is retried row by row.
-
-    KohakuVault releases without ``TextVault.insert_many`` take the per-row path.
-    """
+    """Insert ``(text, meta)`` rows; a failed batch is retried row by row."""
     if not rows:
         return
-    insert_many = getattr(fts, "insert_many", None)
-    if callable(insert_many):
-        try:
-            insert_many(rows)
-            return
-        except Exception as e:
-            logger.warning("FTS batch insert failed", error=str(e), rows=len(rows))
+    try:
+        fts.insert_many(rows)
+        return
+    except Exception as e:
+        logger.warning("FTS batch insert failed", error=str(e), rows=len(rows))
     for text, meta in rows:
         try:
             fts.insert(text, meta)

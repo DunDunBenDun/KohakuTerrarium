@@ -56,10 +56,8 @@ class _Events:
 
 
 class _Fts:
-    def __init__(self, batch=True):
+    def __init__(self):
         self.rows, self.batches = [], []
-        if not batch:
-            self.insert_many = None
 
     def insert_many(self, rows):
         self.batches.append(list(rows))
@@ -87,11 +85,6 @@ class TestInsertFtsRows:
         insert_fts_rows(fts, [("a", {"i": 1}), ("b", {"i": 2})])
         insert_fts_rows(fts, [])
         assert fts.batches == [[("a", {"i": 1}), ("b", {"i": 2})]]
-
-    def test_without_batch_api_inserts_per_row(self):
-        fts = _Fts(batch=False)
-        insert_fts_rows(fts, [("a", {}), ("b", {})])
-        assert fts.rows == [("a", {}), ("b", {})] and fts.batches == []
 
     def test_failed_batch_retries_per_row_and_logs_bad_rows(self, caplog):
         class Flaky(_Fts):
