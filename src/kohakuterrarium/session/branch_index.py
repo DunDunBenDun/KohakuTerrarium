@@ -3,6 +3,8 @@
 import threading
 from typing import Any
 
+from kohakuterrarium.session.vault_io import read_prefix
+
 
 class BranchIndex:
     """Track maximum branch IDs without retaining event payloads."""
@@ -48,8 +50,8 @@ class BranchIndex:
                 generation = self._generation
             table.flush_cache()
             built: dict[int, int] = {}
-            for key in table.keys(prefix=f"{agent}:e", limit=2**31 - 1):
-                event = table[key]
+            # A skipped row could hold the maximum, so read failures propagate.
+            for _, event in read_prefix(table, f"{agent}:e", strict=True):
                 if isinstance(event, dict):
                     self._record(built, event)
             with self._lock:

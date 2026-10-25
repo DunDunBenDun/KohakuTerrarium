@@ -18,21 +18,47 @@ class ObservedTable:
         self.on_read()
         return self.table[key]
 
+    def get_many(self, keys, default=None):
+        self.on_read()
+        return self.table.get_many(keys, default)
+
+
+def test_batch_failure_is_recovered_by_per_key_reads(tmp_path):
+    store = SessionStore(tmp_path / "s.kohakutr")
+    try:
+        _, eid = store.append_event("a", "text", {"content": "original"})
+        store._flush_events_cache()
+        reads = []
+
+        def fail_batch():
+            reads.append(1)
+            if len(reads) == 1:
+                raise OSError("transient batch failure")
+
+        table = ObservedTable(store.events, fail_batch)
+        assert store._event_keys.get(table, "a", eid)["content"] == "original"
+        assert len(reads) == 2
+        # The recovered scan was complete, so the index is published.
+        assert store._event_keys.get(table, "a", eid)["content"] == "original"
+        assert len(reads) == 3
+    finally:
+        store.close()
+
 
 def test_failed_scan_is_retried_and_cached_payload_is_fresh(tmp_path):
     store = SessionStore(tmp_path / "s.kohakutr")
     try:
         key, eid = store.append_event("a", "text", {"content": "original"})
         store._flush_events_cache()
-        failed = False
+        failures = 0
 
-        def fail_once():
-            nonlocal failed
-            if not failed:
-                failed = True
+        def fail_batch_and_row():
+            nonlocal failures
+            if failures < 2:
+                failures += 1
                 raise OSError("transient read failure")
 
-        table = ObservedTable(store.events, fail_once)
+        table = ObservedTable(store.events, fail_batch_and_row)
         assert store._event_keys.get(table, "a", eid) is None
         assert store._event_keys.get(table, "a", eid)["content"] == "original"
         event = store.events[key]

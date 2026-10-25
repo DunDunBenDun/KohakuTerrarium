@@ -48,11 +48,11 @@ class StoreResourceMixin:
     def _discard_failed_open(self) -> None:
         """Drop partial native handles and finish occupancy with proven release."""
         released = False
+        # A read-only store never opens an FTS handle.
+        names = TABLE_ATTRS if self._readonly else (*TABLE_ATTRS, "fts")
         try:
             released = discard_partial_open(
-                [(name, getattr(self, name, None)) for name in TABLE_ATTRS],
-                getattr(self, "fts", None),
-                self._path,
+                [(name, getattr(self, name, None)) for name in names], self._path
             )
         finally:
             try:

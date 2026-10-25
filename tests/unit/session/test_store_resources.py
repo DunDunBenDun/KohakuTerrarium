@@ -7,9 +7,9 @@ import time
 
 import pytest
 
-import kohakuterrarium.session.store as store_mod
 import kohakuterrarium.session.store_lock as store_lock_mod
 import kohakuterrarium.session.store_resources as store_resources_mod
+import kohakuterrarium.session.store_tables as store_tables_mod
 from kohakuterrarium.errors import SessionLockedError
 from kohakuterrarium.session.open_registry import live_store_for
 from kohakuterrarium.session.resource_gate import (
@@ -22,6 +22,7 @@ from kohakuterrarium.session.resource_gate import (
 )
 from kohakuterrarium.session.store import SessionStore
 from kohakuterrarium.session.store_lock import close_tables, discard_partial_open
+from kohakuterrarium.session.vault_handles import dispose, is_disposed
 
 
 def _wait_pending(path, count: int, timeout: float = 2.0) -> None:
@@ -33,33 +34,26 @@ def _wait_pending(path, count: int, timeout: float = 2.0) -> None:
     raise AssertionError(f"pending occupancy did not reach {count}")
 
 
-def _drop_native(obj, attr: str) -> None:
-    if hasattr(obj, attr):
-        delattr(obj, attr)
-
-
-def _manual_cleanup_handles(handles, fts=None) -> None:
+def _manual_cleanup_handles(handles) -> None:
     """Best-effort native teardown after a test observed a leaked constructor."""
     for table in handles:
         try:
-            disable = getattr(table, "disable_cache", None)
-            if callable(disable):
-                disable()
+            dispose(table)
         except Exception:
             pass
-        try:
-            close = getattr(table, "close", None)
-            if callable(close):
-                close()
-        except Exception:
-            pass
-        _drop_native(table, "_inner")
-    if fts is not None:
-        try:
-            fts.close()
-        except Exception:
-            pass
-        _drop_native(fts, "_vault")
+
+
+class _Closable:
+    """A table stand-in that records ``close`` and can fail it."""
+
+    def __init__(self, fail: bool = False):
+        self.closed = False
+        self.fail = fail
+
+    def close(self):
+        if self.fail:
+            raise RuntimeError("close failed")
+        self.closed = True
 
 
 class TestStoreEnrollment:
@@ -173,7 +167,7 @@ class TestStoreEnrollment:
     ):
         path = tmp_path / "assigned.kohakutr"
         opened = []
-        real_kvault = store_mod.KVault
+        real_kvault = store_tables_mod.KVault
 
         class RecordingKVault(real_kvault):
             def __init__(self, *args, **kwargs):
@@ -183,12 +177,12 @@ class TestStoreEnrollment:
         def boom(*args, **kwargs):
             raise RuntimeError("fts open failed")
 
-        monkeypatch.setattr(store_mod, "KVault", RecordingKVault)
-        monkeypatch.setattr(store_mod, "TextVault", boom)
+        monkeypatch.setattr(store_tables_mod, "KVault", RecordingKVault)
+        monkeypatch.setattr(store_tables_mod, "TextVault", boom)
         with pytest.raises(RuntimeError):
             SessionStore(path)
-        assert opened
-        assert all(not hasattr(table, "_inner") for table in opened)
+        assert len(opened) == len(store_tables_mod.TABLE_NAMES)
+        assert all(is_disposed(table) for table in opened)
         snap = GATE.snapshot(path)
         assert snap.legacy_uncertain is True
         denied = try_fast(path, eligible=True)
@@ -296,171 +290,83 @@ class TestStoreEnrollment:
 
 class TestCloseTablesCertainty:
     def test_successful_close_returns_true(self):
-        class Table:
-            def __init__(self):
-                self._inner = object()
-
-            def close(self):
-                return None
-
-        class Fts:
-            def __init__(self):
-                self._vault = object()
-
-        table = Table()
-        fts = Fts()
+        table, fts = _Closable(), _Closable()
         assert close_tables((table,), fts, None) is True
-        assert not hasattr(table, "_inner")
-        assert not hasattr(fts, "_vault")
+        assert table.closed and fts.closed
 
     def test_companion_failure_returns_false(self):
-        class Table:
-            def __init__(self):
-                self._inner = object()
-
-            def close(self):
-                return None
-
-        class Fts:
-            def __init__(self):
-                self._vault = object()
-
         def boom():
             raise RuntimeError("closer")
 
-        table = Table()
-        assert close_tables((table,), Fts(), None, (boom,)) is False
-        assert not hasattr(table, "_inner")
+        table = _Closable()
+        assert close_tables((table,), _Closable(), None, (boom,)) is False
+        assert table.closed
 
-    def test_table_close_failure_propagates(self):
-        class Table:
-            def __init__(self):
-                self._inner = object()
-
-            def close(self):
-                raise RuntimeError("close failed")
-
+    def test_table_close_failure_propagates_after_other_tables(self):
+        failing, later, fts = _Closable(fail=True), _Closable(), _Closable()
         with pytest.raises(RuntimeError):
-            close_tables((Table(),), None, None)
+            close_tables((failing, later), fts, None)
+        assert later.closed and fts.closed
 
 
 class TestDiscardPartialOpenCertainty:
     def test_missing_table_is_uncertain(self):
-        class Table:
-            def __init__(self):
-                self._inner = object()
+        table, fts = _Closable(), _Closable()
+        handles = [("events", table), ("meta", None), ("fts", fts)]
+        assert discard_partial_open(handles, "s") is False
+        assert table.closed and fts.closed
 
-            def disable_cache(self):
-                return None
-
-            def close(self):
-                return None
-
-        class Fts:
-            def __init__(self):
-                self._vault = object()
-
-            def close(self):
-                return None
-
-        table = Table()
-        fts = Fts()
-        assert (
-            discard_partial_open(
-                [("events", table), ("meta", None)],
-                fts,
-                "s.kohakutr",
-            )
-            is False
-        )
-        assert not hasattr(table, "_inner")
-        assert not hasattr(fts, "_vault")
-
-    def test_all_handles_dropped_returns_true(self):
-        class Table:
-            def __init__(self):
-                self._inner = object()
-
-            def disable_cache(self):
-                return None
-
-            def close(self):
-                return None
-
-        class Fts:
-            def __init__(self):
-                self._vault = object()
-
-            def close(self):
-                return None
-
-        tables = [(name, Table()) for name in store_lock_mod.TABLE_ATTRS]
-        fts = Fts()
-        assert discard_partial_open(tables, fts, "s.kohakutr") is True
-        assert all(not hasattr(table, "_inner") for _, table in tables)
-        assert not hasattr(fts, "_vault")
-
-    def test_missing_native_attr_is_uncertain(self):
-        class Table:
-            def disable_cache(self):
-                return None
-
-            def close(self):
-                return None
-
-        class Fts:
-            def __init__(self):
-                self._vault = object()
-
-            def close(self):
-                return None
-
-        assert (
-            discard_partial_open(
-                [(name, Table()) for name in store_lock_mod.TABLE_ATTRS],
-                Fts(),
-                "s.kohakutr",
-            )
-            is False
-        )
+    def test_all_handles_released_returns_true(self):
+        tables = [(name, _Closable()) for name in store_lock_mod.TABLE_ATTRS]
+        fts = _Closable()
+        assert discard_partial_open([*tables, ("fts", fts)], "s.kohakutr") is True
+        assert all(table.closed for _, table in tables) and fts.closed
 
     def test_missing_fts_is_uncertain(self):
-        class Table:
-            def __init__(self):
-                self._inner = object()
-
-            def disable_cache(self):
-                return None
-
-            def close(self):
-                return None
-
-        tables = [(name, Table()) for name in store_lock_mod.TABLE_ATTRS]
-        assert discard_partial_open(tables, None, "s.kohakutr") is False
+        tables = [(name, _Closable()) for name in store_lock_mod.TABLE_ATTRS]
+        assert discard_partial_open([*tables, ("fts", None)], "s.kohakutr") is False
 
     def test_swallowed_cleanup_error_does_not_claim_release(self):
-        class Table:
-            def __init__(self):
-                self._inner = object()
+        tables = [(name, _Closable(fail=True)) for name in store_lock_mod.TABLE_ATTRS]
+        fts = _Closable()
+        assert discard_partial_open([*tables, ("fts", fts)], "s.kohakutr") is False
+        assert fts.closed
 
-            def disable_cache(self):
-                raise RuntimeError("cache disable failed")
+    def test_failed_read_only_open_releases_without_fts(self, tmp_path, monkeypatch):
+        path = tmp_path / "ro.kohakutr"
+        SessionStore(str(path)).close()
 
-            def close(self):
-                raise RuntimeError("close failed")
+        def broken_restore(self):
+            raise RuntimeError("restore failed")
 
-        class Fts:
-            def __init__(self):
-                self._vault = object()
+        monkeypatch.setattr(SessionStore, "_restore_counters", broken_restore)
+        with pytest.raises(RuntimeError, match="restore failed"):
+            SessionStore.open_readonly(path)
+        snap = GATE.snapshot(path)
+        assert not snap.legacy_uncertain and snap.legacy_active == 0
 
-            def close(self):
-                return None
+    def test_real_tables_with_live_flush_worker_are_uncertain(self, tmp_path):
+        vault = store_tables_mod.KVault(str(tmp_path / "w.kohakutr"), table="t")
+        entered, release = threading.Event(), threading.Event()
+        original = vault.flush_cache
 
-        tables = [(name, Table()) for name in store_lock_mod.TABLE_ATTRS]
-        fts = Fts()
-        assert discard_partial_open(tables, fts, "s.kohakutr") is False
-        assert all(not hasattr(table, "_inner") for _, table in tables)
-        assert not hasattr(fts, "_vault")
+        def blocked():
+            if threading.current_thread() is vault._daemon_thread:
+                entered.set()
+                assert release.wait(10)
+            return original()
+
+        vault.flush_cache = blocked
+        vault.enable_cache(flush_interval=0.01)
+        daemon = vault._daemon_thread
+        try:
+            assert entered.wait(5)
+            assert (
+                discard_partial_open([("t", vault), ("fts", _Closable())], "w") is False
+            )
+        finally:
+            release.set()
+            daemon.join(5)
 
 
 class TestDiscardFailedOpenBaseException:
@@ -469,7 +375,7 @@ class TestDiscardFailedOpenBaseException:
     ):
         path = tmp_path / "discard-interrupt.kohakutr"
         opened = []
-        real_kvault = store_mod.KVault
+        real_kvault = store_tables_mod.KVault
 
         class RecordingKVault(real_kvault):
             def __init__(self, *args, **kwargs):
@@ -485,8 +391,8 @@ class TestDiscardFailedOpenBaseException:
             real_discard(*args, **kwargs)
             raise KeyboardInterrupt("discard interrupted")
 
-        monkeypatch.setattr(store_mod, "KVault", RecordingKVault)
-        monkeypatch.setattr(store_mod, "TextVault", boom)
+        monkeypatch.setattr(store_tables_mod, "KVault", RecordingKVault)
+        monkeypatch.setattr(store_tables_mod, "TextVault", boom)
         monkeypatch.setattr(store_lock_mod, "discard_partial_open", interrupt_discard)
         monkeypatch.setattr(
             store_resources_mod, "discard_partial_open", interrupt_discard
@@ -511,7 +417,7 @@ class TestDiscardFailedOpenBaseException:
     ):
         path = tmp_path / "constructor-interrupt.kohakutr"
         opened = []
-        real_kvault = store_mod.KVault
+        real_kvault = store_tables_mod.KVault
 
         class RecordingKVault(real_kvault):
             def __init__(self, *args, **kwargs):
@@ -521,8 +427,8 @@ class TestDiscardFailedOpenBaseException:
         def boom(*args, **kwargs):
             raise KeyboardInterrupt("constructor interrupted")
 
-        monkeypatch.setattr(store_mod, "KVault", RecordingKVault)
-        monkeypatch.setattr(store_mod, "TextVault", boom)
+        monkeypatch.setattr(store_tables_mod, "KVault", RecordingKVault)
+        monkeypatch.setattr(store_tables_mod, "TextVault", boom)
         with pytest.raises(KeyboardInterrupt):
             SessionStore(path, writer_lock=True)
         try:

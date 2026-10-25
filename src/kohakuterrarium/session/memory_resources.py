@@ -4,6 +4,7 @@ import threading
 from typing import Any
 
 from kohakuterrarium.session.resource_gate import acquire_legacy
+from kohakuterrarium.session.vault_handles import dispose
 from kohakuterrarium.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -15,18 +16,18 @@ class MemoryResources:
     def __init__(self, path: str) -> None:
         self._lock = threading.RLock()
         self._lease = acquire_legacy(path, "memory_open")
-        self._handles: list[tuple[Any, str]] = []
+        self._handles: list[Any] = []
         self._released = False
         self._certain = True
 
-    def open(self, factory, *args, native_attr: str, **kwargs):
+    def open(self, factory, *args, **kwargs):
         """Open and retain one native index table."""
         with self._lock:
             if self._released:
                 raise RuntimeError("SessionMemory is closed")
             try:
                 handle = factory(*args, **kwargs)
-                self._handles.append((handle, native_attr))
+                self._handles.append(handle)
             except BaseException:
                 self._certain = False
                 raise
@@ -35,39 +36,27 @@ class MemoryResources:
     def drop(self, handle: Any) -> None:
         """Dispose a temporary index handle before the enclosing memory closes."""
         with self._lock:
-            for index, (table, attr) in enumerate(self._handles):
+            for index, table in enumerate(self._handles):
                 if table is handle:
                     try:
-                        delattr(table, attr)
+                        if not dispose(table):
+                            self._certain = False
                     except BaseException:
                         self._certain = False
                         raise
-                    else:
-                        self._handles.pop(index)
+                    self._handles.pop(index)
                     return
 
     def close(self) -> None:
-        """Close index state and drop native references, retaining uncertain occupancy."""
+        """Dispose every handle, retaining failed ones for a retry."""
         with self._lock:
             if self._released and not self._handles:
                 return
             try:
                 index = 0
                 while index < len(self._handles):
-                    table, attr = self._handles[index]
-                    if attr == "_inner":
-                        daemon = getattr(table, "_daemon_thread", None)
-                        try:
-                            table.close()
-                        except Exception:
-                            self._certain = False
-                            logger.warning("Memory state close failed", exc_info=True)
-                        if daemon is not None and daemon.is_alive():
-                            self._certain = False
                     try:
-                        delattr(table, attr)
-                    except AttributeError:
-                        pass
+                        released = dispose(self._handles[index])
                     except Exception:
                         self._certain = False
                         logger.warning(
@@ -75,6 +64,8 @@ class MemoryResources:
                         )
                         index += 1
                         continue
+                    if not released:
+                        self._certain = False
                     self._handles.pop(index)
             except BaseException:
                 self._certain = False

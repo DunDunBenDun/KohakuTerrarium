@@ -20,6 +20,7 @@ from kohakuterrarium.session.embedding import NullEmbedder
 from kohakuterrarium.session.memory import SessionMemory
 from kohakuterrarium.session.open_registry import live_store_for
 from kohakuterrarium.session.store import SessionStore
+from kohakuterrarium.session.vault_handles import is_disposed
 from kohakuterrarium.studio.sessions import memory_search as mem_mod
 
 _ORIGINAL_MEMORY_CLOSE = SessionMemory.close
@@ -37,27 +38,16 @@ def _seed_session(path: Path) -> None:
 
 
 def _memory_closed(memory: SessionMemory) -> bool:
-    """Native vault handles are dropped by ``SessionMemory.close``."""
-    fts = getattr(memory, "_fts", None)
-    state = getattr(memory, "_state", None)
-    vec = getattr(memory, "_vec", None)
-    return (
-        (fts is None or not hasattr(fts, "_vault"))
-        and (state is None or not hasattr(state, "_inner"))
-        and (vec is None or not hasattr(vec, "_vault"))
-    )
+    """Native vault handles are released by ``SessionMemory.close``."""
+    handles = (getattr(memory, name, None) for name in ("_fts", "_state", "_vec"))
+    return all(h is None or is_disposed(h) for h in handles)
 
 
 def _store_tables_closed(store: SessionStore) -> bool:
-    """Native KVault handles are dropped by ``SessionStore.close``."""
-    for name in ("events", "meta", "state", "channels"):
-        table = getattr(store, name, None)
-        if table is not None and hasattr(table, "_inner"):
-            return False
-    fts = getattr(store, "fts", None)
-    if fts is not None and hasattr(fts, "_vault"):
-        return False
-    return True
+    """Native KVault handles are released by ``SessionStore.close``."""
+    names = ("events", "meta", "state", "channels", "fts")
+    handles = (getattr(store, name, None) for name in names)
+    return all(h is None or is_disposed(h) for h in handles)
 
 
 def _assert_owned_closed(

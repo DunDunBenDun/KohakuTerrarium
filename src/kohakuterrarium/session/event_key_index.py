@@ -3,10 +3,10 @@
 import threading
 from typing import Any
 
+from kohakuterrarium.session.vault_io import read_values, scan_keys
 from kohakuterrarium.utils.logging import get_logger
 
 logger = get_logger(__name__)
-_KEYS_LIMIT = 2**31 - 1
 
 
 class EventKeyIndex:
@@ -56,14 +56,10 @@ class EventKeyIndex:
             generation = self._generation
         built = {}
         found = None
-        complete = True
-        for key in table.keys(prefix=f"{agent}:e", limit=_KEYS_LIMIT):
-            try:
-                event = table[key]
-            except Exception as exc:
-                logger.warning("Failed to read event", error=str(exc), exc_info=True)
-                complete = False
-                continue
+        keys = scan_keys(table, f"{agent}:e")
+        rows = list(read_values(table, keys, what="event"))
+        complete = len(rows) == len(keys)
+        for key, event in rows:
             if not isinstance(event, dict):
                 continue
             eid = event.get("event_id")

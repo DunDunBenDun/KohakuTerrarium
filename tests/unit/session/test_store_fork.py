@@ -257,6 +257,32 @@ class TestPerformForkHappy:
         finally:
             s.close()
 
+    def test_child_counter_reflects_its_own_events(self, tmp_path):
+        path = tmp_path / "src.kohakutr"
+        s = SessionStore(str(path))
+        s.init_meta("parent", "agent", "/p", "/w", ["alice"])
+        for i in range(6):
+            s.append_event("alice", "user_message", {"content": f"m{i}"})
+        s.close()
+        # A cleanly closed parent carries an exact counter for ITS log.
+        s = SessionStore(str(path))
+        try:
+            child_path = tmp_path / "child.kohakutr"
+            child = perform_fork(s, str(child_path), at_event_id=2)
+            try:
+                assert child.global_max_event_id == 2
+                _, eid = child.append_event("alice", "user_message", {"content": "c"})
+                assert eid == 3
+            finally:
+                child.close(update_status=False)
+            reopened = SessionStore(str(child_path))
+            try:
+                assert reopened.global_max_event_id == 3
+            finally:
+                reopened.close(update_status=False)
+        finally:
+            s.close()
+
     @pytest.mark.parametrize(
         ("fork_point", "drop_last", "expected"),
         [

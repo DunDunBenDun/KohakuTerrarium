@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from kohakuterrarium.session.store import iter_kv_keys
+from kohakuterrarium.session.vault_io import scan_keys
 
 DEFAULT_LIMIT = 400
 MAX_LIMIT = 400
@@ -101,7 +101,7 @@ def physical_refs(vault: Any, target: str, kind: str) -> list[str]:
     vault.flush_cache()
     prefix = f"{target}:{kind}"
     refs = []
-    for key in iter_kv_keys(vault, prefix=prefix):
+    for key in scan_keys(vault, prefix):
         ref = key.decode("utf-8") if isinstance(key, bytes) else key
         suffix = ref[len(prefix) :]
         if suffix and suffix.isascii() and suffix.isdigit():

@@ -3,13 +3,14 @@
 import gc
 import os
 import threading
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
-import kohakuterrarium.session.store as store_mod
+import kohakuterrarium.session.store_tables as store_tables_mod
 from kohakuterrarium.errors import SessionLockedError
-from kohakuterrarium.session.store import SessionStore, iter_kv_keys
+from kohakuterrarium.session.store import SessionStore
 
 try:
     import resource
@@ -119,6 +120,145 @@ def test_append_persists_event_counter_for_reopen(tmp_path):
         assert eid == 3
     finally:
         reopened.close()
+
+
+def _counters(path):
+    from kohakuvault import KVault
+
+    with closing(KVault(str(path), table="state")) as state:
+        state.enable_auto_pack()
+        return state.get_many(["counters:max_event_id", "counters:exact_event_id"])
+
+
+def _crash_copy(store, target):
+    """A copy of ``store``'s committed file state, as a crash would leave it."""
+    import shutil
+
+    store.checkpoint()
+    shutil.copyfile(store.path, target)
+    return target
+
+
+class TestEventIdWatermark:
+    def test_reserved_per_block_and_exact_after_clean_close(
+        self, tmp_path, monkeypatch
+    ):
+        from kohakuterrarium.session import store as store_module
+
+        path = tmp_path / "w.kohakutr"
+        block = SessionStore.EVENT_ID_BLOCK
+        reservations = []
+        real_reserve = store_module.reserve_event_ids
+
+        def reserve(state, upto):
+            reservations.append(upto)
+            return real_reserve(state, upto)
+
+        monkeypatch.setattr(store_module, "reserve_event_ids", reserve)
+        store = SessionStore(str(path))
+        try:
+            for i in range(block + 6):
+                store.append_event("a", "text", {"content": f"c{i}"})
+            assert reservations == [1 + block, (block + 2) + block]
+            store.flush()
+            assert _counters(path) == [reservations[-1], None]
+        finally:
+            store.close()
+        assert _counters(path) == [block + 6, block + 6]
+        reopened = SessionStore(str(path))
+        try:
+            assert reopened.global_max_event_id == block + 6
+            assert reopened.append_event("a", "text", {"content": "n"})[1] == block + 7
+        finally:
+            reopened.close()
+
+    def test_crash_never_reuses_an_assigned_id(self, tmp_path):
+        path = tmp_path / "live.kohakutr"
+        store = SessionStore(str(path))
+        try:
+            for i in range(10):
+                store.append_event("a", "text", {"content": f"c{i}"})
+            crashed = _crash_copy(store, tmp_path / "crashed.kohakutr")
+        finally:
+            store.close()
+        # Ids 9 and 10 were handed out, but their rows never reached disk.
+        from kohakuvault import KVault
+
+        with closing(KVault(str(crashed), table="events")) as events:
+            events.delete("a:e000008")
+            events.delete("a:e000009")
+        reopened = SessionStore(str(crashed))
+        try:
+            assert reopened.global_max_event_id == 8
+            _, eid = reopened.append_event("a", "text", {"content": "after crash"})
+            assert eid > 10
+        finally:
+            reopened.close()
+
+    def test_secondary_writer_close_does_not_vouch_for_the_primary(self, tmp_path):
+        path = tmp_path / "shared.kohakutr"
+        primary = SessionStore(str(path))
+        try:
+            for i in range(3):
+                primary.append_event("a", "text", {"content": f"c{i}"})
+            primary.flush()
+            SessionStore(str(path)).close(update_status=False)
+            for i in range(5):
+                primary.append_event("a", "text", {"content": f"d{i}"})
+            crashed = _crash_copy(primary, tmp_path / "crashed.kohakutr")
+        finally:
+            primary.close()
+        reopened = SessionStore(str(crashed))
+        try:
+            assert reopened.global_max_event_id == 8
+            assert reopened.append_event("a", "text", {"content": "x"})[1] > 8
+        finally:
+            reopened.close()
+
+    def test_failed_final_commit_leaves_no_clean_marker(self, tmp_path):
+        path = tmp_path / "failing.kohakutr"
+        SessionStore(str(path)).close()
+        failing = SessionStore(str(path), flush_every_n_events=1000)
+        try:
+            failing.append_event("a", "text", {"content": "lost in cache"})
+
+            def broken_flush():
+                raise OSError("disk full")
+
+            failing.events.flush_cache = broken_flush
+        finally:
+            failing.close()
+        assert _counters(path) == [1 + SessionStore.EVENT_ID_BLOCK, 0]
+
+    def test_read_only_store_scans_only_when_asked(self, tmp_path, monkeypatch):
+        from kohakuterrarium.session import store as store_module
+
+        path = tmp_path / "live.kohakutr"
+        store = SessionStore(str(path))
+        try:
+            for i in range(4):
+                store.append_event("a", "text", {"content": f"c{i}"})
+            store.flush()
+            scans = []
+            real_scan = store_module.scan_max_event_id
+
+            def scan(events):
+                scans.append(True)
+                return real_scan(events)
+
+            monkeypatch.setattr(store_module, "scan_max_event_id", scan)
+            reader = SessionStore.open_readonly(path)
+            try:
+                assert scans == []
+                assert len(reader.get_events("a")) == 4
+                assert scans == []
+                assert reader.max_event_id("a") == 4
+                assert reader.global_max_event_id == 4
+                assert scans == [True]
+            finally:
+                reader.close()
+        finally:
+            store.close()
 
 
 # ── construction ──────────────────────────────────────────────────
@@ -780,6 +920,60 @@ class TestSearch:
         finally:
             s.close()
 
+    def test_search_sees_rows_buffered_since_last_flush(self, tmp_path):
+        s = SessionStore(
+            str(tmp_path / "buffered.kohakutr"),
+            flush_every_n_events=1000,
+            flush_every_n_seconds=0,
+        )
+        try:
+            s.append_event("a", "user_message", {"content": "unflushed needle text"})
+            s.save_channel_message("ops", {"sender": "a", "content": "channel needle"})
+            assert s._unflushed_event_count == 1
+            hits = s.search("needle", k=5)
+            assert {hit["meta"]["type"] for hit in hits} == {"user_message", "channel"}
+            assert s._unflushed_event_count == 0
+        finally:
+            s.close()
+
+    def test_read_only_store_searches_and_rejects_appends(self, tmp_path):
+        path = tmp_path / "ro.kohakutr"
+        s = SessionStore(str(path))
+        try:
+            s.append_event("a", "user_message", {"content": "persisted needle text"})
+        finally:
+            s.close()
+        before = path.read_bytes()
+        ro = SessionStore.open_readonly(path)
+        try:
+            assert [h["meta"]["agent"] for h in ro.search("needle", k=5)] == ["a"]
+            with pytest.raises(PermissionError):
+                ro.append_event("a", "text", {"content": "nope"})
+            ro.flush()
+        finally:
+            ro.close()
+        # A WAL-shared reader may leave empty sidecars; the file is untouched.
+        assert path.read_bytes() == before
+        with pytest.raises(FileNotFoundError):
+            SessionStore.open_readonly(tmp_path / "absent.kohakutr")
+
+    def test_read_only_search_never_creates_the_fts_table(self, tmp_path):
+        from kohakuvault import KVault
+
+        path = tmp_path / "nofts.kohakutr"
+        with closing(KVault(str(path), table="meta")) as meta:
+            meta.enable_auto_pack()
+            meta["session_id"] = "nofts"
+        before = path.read_bytes()
+        ro = SessionStore.open_readonly(path)
+        try:
+            assert ro.search("anything", k=5) == []
+        finally:
+            ro.close()
+        assert path.read_bytes() == before
+        wal = tmp_path / "nofts.kohakutr-wal"
+        assert not wal.exists() or wal.stat().st_size == 0
+
 
 # ── flush / close ─────────────────────────────────────────────────
 
@@ -915,33 +1109,6 @@ class TestRollupAPI:
             s.save_turn_rollup("a", 0, {"tokens_in": 5})
             assert s.get_turn_rollup("a", 0)["tokens_in"] == 5
             assert len(s.list_turn_rollups("a")) == 1
-        finally:
-            s.close()
-
-
-# ── iter_kv_keys helper ───────────────────────────────────────────
-
-
-class TestIterKvKeys:
-    def test_iter_no_prefix(self, tmp_path):
-        s = _store(tmp_path)
-        try:
-            s.append_event("a", "x", {})
-            s.append_event("b", "x", {})
-            s.flush()
-            keys = list(iter_kv_keys(s.events))
-            assert len(keys) == 2
-        finally:
-            s.close()
-
-    def test_iter_with_prefix(self, tmp_path):
-        s = _store(tmp_path)
-        try:
-            s.append_event("a", "x", {})
-            s.append_event("b", "x", {})
-            s.flush()
-            keys = list(iter_kv_keys(s.events, prefix=b"a:e"))
-            assert len(keys) == 1
         finally:
             s.close()
 
@@ -1310,7 +1477,7 @@ class TestPartialOpenCleanup:
 
     def test_tables_opened_before_failure_are_closed(self, tmp_path, monkeypatch):
         opened: list = []
-        real_kvault = store_mod.KVault
+        real_kvault = store_tables_mod.KVault
 
         class RecordingKVault(real_kvault):
             def __init__(self, *args, **kwargs):
@@ -1320,19 +1487,18 @@ class TestPartialOpenCleanup:
         def _boom(*args, **kwargs):
             raise RuntimeError("fts open failed")
 
-        monkeypatch.setattr(store_mod, "KVault", RecordingKVault)
-        monkeypatch.setattr(store_mod, "TextVault", _boom)
+        monkeypatch.setattr(store_tables_mod, "KVault", RecordingKVault)
+        monkeypatch.setattr(store_tables_mod, "TextVault", _boom)
         threads_before = threading.active_count()
         with pytest.raises(RuntimeError):
             SessionStore(tmp_path / "s.kohakutr")
         assert len(opened) == 8
-        assert all(table._closed for table in opened)
-        assert not any(hasattr(table, "_inner") for table in opened)
+        assert all(table._closed and table._inner is None for table in opened)
         assert threading.active_count() == threads_before
 
     def test_counter_restore_failure_closes_every_table(self, tmp_path, monkeypatch):
         opened: list = []
-        real_kvault = store_mod.KVault
+        real_kvault = store_tables_mod.KVault
 
         class RecordingKVault(real_kvault):
             def __init__(self, *args, **kwargs):
@@ -1342,7 +1508,7 @@ class TestPartialOpenCleanup:
         def _boom(self):
             raise RuntimeError("counter restore failed")
 
-        monkeypatch.setattr(store_mod, "KVault", RecordingKVault)
+        monkeypatch.setattr(store_tables_mod, "KVault", RecordingKVault)
         monkeypatch.setattr(SessionStore, "_restore_counters", _boom)
         threads_before = threading.active_count()
         with pytest.raises(RuntimeError):

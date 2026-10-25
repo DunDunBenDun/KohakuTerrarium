@@ -101,28 +101,15 @@ class TestDetectFormatVersion:
             meta.close()
 
         import kohakuterrarium.session.readonly as readonly_mod
+        from kohakuterrarium.session.resource_gate import GATE
 
-        real_kvault = readonly_mod.KVault
+        real_dispose = readonly_mod.dispose
 
-        class _CloseRaisesKVault:
-            def __init__(self, *a, **kw):
-                self._inner = real_kvault(*a, **kw)
+        def close_then_raise(handle):
+            real_dispose(handle)
+            raise RuntimeError("close exploded")
 
-            def enable_auto_pack(self):
-                return self._inner.enable_auto_pack()
-
-            def __getitem__(self, key):
-                return self._inner[key]
-
-            def keys(self):
-                return self._inner.keys()
-
-            def close(self):
-                # Close the real handle, then raise to exercise the
-                # defensive ``except`` around ``meta.close()``.
-                self._inner.close()
-                raise RuntimeError("close exploded")
-
-        monkeypatch.setattr(readonly_mod, "KVault", _CloseRaisesKVault)
-        # The version is still detected; the close failure is swallowed.
+        monkeypatch.setattr(readonly_mod, "dispose", close_then_raise)
+        # The version is still detected; the close failure only taints occupancy.
         assert detect_format_version(path) == 2
+        assert GATE.snapshot(path).legacy_uncertain

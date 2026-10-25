@@ -6,9 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
+import kohakuterrarium.session.memory_resources as resources_module
 from kohakuterrarium.session.memory import SessionMemory
 from kohakuterrarium.session.memory_resources import MemoryResources
 from kohakuterrarium.session.resource_gate import GATE, try_fast
+from kohakuterrarium.session.vault_handles import dispose, is_disposed
 
 
 def test_cyclic_initialization_causes_do_not_hang():
@@ -55,50 +57,40 @@ def test_failed_handle_disposal_can_be_retried(
     path = tmp_path / "retry.kohakutr"
     memory = SessionMemory(str(path))
     memory._set_embedder(SimpleNamespace(dimensions=4))
-    handles = [
-        (memory._fts, "_vault"),
-        (memory._state, "_inner"),
-        (memory._vec, "_vault"),
-    ]
-    table, attr = handles[{"fts": 0, "state": 1, "vector": 2}[failed_handle]]
-    original = type(table).__delattr__
+    handles = [memory._fts, memory._state, memory._vec]
+    table = handles[{"fts": 0, "state": 1, "vector": 2}[failed_handle]]
 
-    def fail_drop(self, name):
-        if self is table and name == attr:
+    def fail_dispose(handle):
+        if handle is table:
             raise failure("dispose failed")
-        return original(self, name)
+        return dispose(handle)
 
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(type(table), "__delattr__", fail_drop)
+            patch.setattr(resources_module, "dispose", fail_dispose)
             if failure is KeyboardInterrupt:
                 with pytest.raises(KeyboardInterrupt):
                     memory.close()
             else:
                 memory.close()
-        assert hasattr(table, attr)
+        assert not is_disposed(table)
         assert GATE.snapshot(path).legacy_uncertain
         with pytest.raises(RuntimeError, match="closed"):
-            memory._resources.open(lambda: None, native_attr="_vault")
+            memory._resources.open(lambda: None)
         memory.close()
         memory.close()
-        for handle, native in handles:
-            assert not hasattr(handle, native)
+        assert all(is_disposed(handle) for handle in handles)
         assert memory._resources._handles == []
         assert try_fast(path, eligible=True).reason == "legacy_release_uncertain"
     finally:
-        for handle, native in handles:
-            if hasattr(handle, native):
-                if native == "_inner":
-                    handle.close()
-                delattr(handle, native)
+        for handle in handles:
+            dispose(handle)
 
 
 def test_state_close_interruption_retains_handle_for_retry(tmp_path, monkeypatch):
     path = tmp_path / "state.kohakutr"
     memory = SessionMemory(str(path))
     state = memory._state
-    original = state.close
 
     def interrupted():
         raise KeyboardInterrupt("state close interrupted")
@@ -109,15 +101,12 @@ def test_state_close_interruption_retains_handle_for_retry(tmp_path, monkeypatch
             with pytest.raises(KeyboardInterrupt):
                 memory.close()
         memory.close()
-        assert not hasattr(state, "_inner")
-        assert not hasattr(memory._fts, "_vault")
+        assert is_disposed(state)
+        assert is_disposed(memory._fts)
         assert GATE.snapshot(path).legacy_uncertain
     finally:
-        if hasattr(state, "_inner"):
-            original()
-            del state._inner
-        if hasattr(memory._fts, "_vault"):
-            del memory._fts._vault
+        dispose(state)
+        dispose(memory._fts)
 
 
 @pytest.mark.parametrize("chained_primary", [False, True])

@@ -19,7 +19,17 @@ from kohakuterrarium.session.history import (
 )
 from kohakuterrarium.session.identity import new_conversation_id
 from kohakuterrarium.session.resource_gate import acquire_legacy
+from kohakuterrarium.session.store_counters import (
+    EXACT_EVENT_ID_KEY,
+    MAX_EVENT_ID_KEY,
+)
 from kohakuterrarium.session.store_protocol import SessionStoreLike
+from kohakuterrarium.session.vault_io import (
+    copy_rows,
+    read_prefix,
+    scan_keys,
+    write_rows,
+)
 from kohakuterrarium.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -93,7 +103,7 @@ def check_fork_stability(
 
 def _iter_keys(table: KVault) -> list[str]:
     """Return every key in a KVault decoded to str."""
-    return [_decode_key(k) for k in table.keys(limit=2**31 - 1)]
+    return [_decode_key(k) for k in scan_keys(table)]
 
 
 def _copy_table(src: KVault, dst: KVault, keys: list[str] | None = None) -> int:
@@ -101,22 +111,7 @@ def _copy_table(src: KVault, dst: KVault, keys: list[str] | None = None) -> int:
 
     ``keys=None`` copies the complete table.
     """
-    target_keys = keys if keys is not None else _iter_keys(src)
-    written = 0
-    for key in target_keys:
-        try:
-            dst[key] = src[key]
-            written += 1
-        except KeyError:
-            continue
-        except Exception as e:
-            logger.warning(
-                "Fork failed to copy table row",
-                key=key,
-                error=str(e),
-                exc_info=True,
-            )
-    return written
+    return copy_rows(src, dst, keys, what="fork table row")
 
 
 def _copy_branch_views(source: SessionStoreLike, dest: SessionStoreLike) -> None:
@@ -230,18 +225,8 @@ def _collect_copy_range(
     source.events.flush_cache()
     in_range: list[tuple[str, dict[str, Any]]] = []
     fork_point: dict[str, Any] | None = None
-    for key_bytes in source.events.keys(limit=2**31 - 1):
+    for key_bytes, evt in read_prefix(source.events, what="event during fork scan"):
         key = _decode_key(key_bytes)
-        try:
-            evt = source.events[key_bytes]
-        except Exception as e:
-            logger.warning(
-                "Fork failed to read event during scan",
-                key=key,
-                error=str(e),
-                exc_info=True,
-            )
-            continue
         if not isinstance(evt, dict):
             continue
         eid = evt.get("event_id")
@@ -399,38 +384,27 @@ def perform_fork(
         raise FileExistsError(target)
 
     created_at = datetime.now(timezone.utc).isoformat()
-    parent_meta: dict[str, Any] = {}
-    for key_bytes in source.meta.keys(limit=2**31 - 1):
-        key = _decode_key(key_bytes)
-        try:
-            parent_meta[key] = source.meta[key_bytes]
-        except Exception as e:
-            logger.warning(
-                "Fork failed to read parent meta key",
-                key=key,
-                error=str(e),
-                exc_info=True,
-            )
+    parent_meta: dict[str, Any] = {
+        _decode_key(key): value
+        for key, value in read_prefix(source.meta, what="parent meta key")
+    }
     parent_session_id = str(parent_meta.get("session_id") or Path(source.path).stem)
     child_session_id = _child_session_id(parent_session_id)
     child_name = name or child_session_id
 
     dest = type(source)(str(target))
     try:
-        # Child identity and lineage replace parent-local metadata after copying.
-        for key, value in parent_meta.items():
-            if key in ("forked_children", "resume_successor"):
-                # Child discovery records belong only to the parent.
-                continue
-            try:
-                dest.meta[key] = value
-            except Exception as e:
-                logger.warning(
-                    "Fork failed to write child meta key",
-                    key=key,
-                    error=str(e),
-                    exc_info=True,
-                )
+        # Child identity and lineage replace parent-local metadata after copying;
+        # child discovery records belong only to the parent.
+        write_rows(
+            dest.meta,
+            [
+                (key, value)
+                for key, value in parent_meta.items()
+                if key not in ("forked_children", "resume_successor")
+            ],
+            what="child meta key",
+        )
 
         dest.meta["session_id"] = child_session_id
         dest.meta["conversation_id"] = new_conversation_id()
@@ -466,7 +440,6 @@ def perform_fork(
                     f"got {type(result).__name__}"
                 )
 
-        event_keys = [key for key, _ in in_range]
         fork_point_key: str | None = None
         if fork_point_event is not None:
             for key, evt in in_range:
@@ -475,21 +448,14 @@ def perform_fork(
                     break
 
         if mutate is None or fork_point_event is None:
-            _copy_table(source.events, dest.events, keys=event_keys)
+            write_rows(dest.events, in_range, what="event")
         else:
             # Reinsert the fork point only when the mutator returns an event.
-            for key in event_keys:
-                if key == fork_point_key:
-                    continue
-                try:
-                    dest.events[key] = source.events[key]
-                except Exception as e:
-                    logger.warning(
-                        "Fork failed to copy non-fork event",
-                        key=key,
-                        error=str(e),
-                        exc_info=True,
-                    )
+            write_rows(
+                dest.events,
+                [(key, evt) for key, evt in in_range if key != fork_point_key],
+                what="non-fork event",
+            )
             if mutated_fork_event is not None and fork_point_key is not None:
                 # Preserve replay-critical identity when the mutator omits it.
                 payload = dict(mutated_fork_event)
@@ -497,12 +463,13 @@ def perform_fork(
                 payload.setdefault("type", fork_point_event.get("type", "user_message"))
                 dest.events[fork_point_key] = payload
 
-        # Snapshot markers and conversation caches may include post-fork events,
-        # so the child must rebuild conversation state from its truncated log.
+        # Snapshot markers, caches and event counters describe the parent's log;
+        # the child rebuilds them from its truncated copy.
         state_keys = [
             k
             for k in _iter_keys(source.state)
-            if not k.endswith(
+            if k not in (MAX_EVENT_ID_KEY, EXACT_EVENT_ID_KEY)
+            and not k.endswith(
                 (
                     ":snapshot_event_id",
                     ":snapshot_branch",

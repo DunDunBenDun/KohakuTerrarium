@@ -3,12 +3,10 @@
 import json
 import platform
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-from kohakuvault import KVault, TextVault
 
 from kohakuterrarium.session.artifacts import artifacts_dir_for, write_artifact_bytes
 from kohakuterrarium.session.branch_index import BranchIndex, BranchIndexMixin
@@ -27,49 +25,39 @@ from kohakuterrarium.session.snapshot import load_branch_snapshot, save_branch_s
 from kohakuterrarium.session.store_affinity import StoreAffinityMixin
 from kohakuterrarium.session.store_counters import (
     persist_event_counter,
+    reserve_event_ids,
     restore_event_counters,
     restore_subagent_counters,
     restore_suffix_counters,
+    scan_max_event_id,
 )
 from kohakuterrarium.session.store_discovery import (
     discover_agents,
     discover_attached_agents,
 )
 from kohakuterrarium.session.store_events import _iter_event_values
+from kohakuterrarium.session.store_flush import EventFlushPipeline, insert_fts_rows
 from kohakuterrarium.session.store_fork import perform_fork
 from kohakuterrarium.session.store_resources import StoreResourceMixin
+from kohakuterrarium.session.store_tables import open_store_tables
+from kohakuterrarium.session.table_policy import TablePolicy, resolve_table_policy
 from kohakuterrarium.session.token_views import (
     token_usage as _token_usage_impl,
     token_usage_all_loops as _token_usage_all_loops_impl,
 )
+from kohakuterrarium.session.vault_handles import dispose
+from kohakuterrarium.session.vault_io import (
+    key_text,
+    read_prefix,
+    read_values,
+    scan_keys,
+)
+from kohakuterrarium.session.vault_read import open_read_text
 from kohakuterrarium.session.version import FORMAT_VERSION
 from kohakuterrarium.utils.fs_path import coerce_fs_path
 from kohakuterrarium.utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-# KVault defaults to 10,000 keys, which can silently truncate long sessions.
-_KV_KEYS_LIMIT: int = 2**31 - 1
-
-
-def iter_kv_keys(
-    table: Any,
-    *,
-    prefix: Any = None,
-    limit: int = _KV_KEYS_LIMIT,
-) -> Iterable[Any]:
-    """Iterate every key of a KVault table, bypassing its 10k default.
-
-    ``prefix`` filters the result, and an explicit ``limit`` can override the
-    large session-safe default.
-    """
-    if prefix is None:
-        return table.keys(limit=limit)
-    return table.keys(prefix=prefix, limit=limit)
-
-
-def _key_text(key: Any) -> str:
-    return key.decode("utf-8", errors="replace") if isinstance(key, bytes) else key
 
 
 class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
@@ -80,9 +68,11 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
     rollups, job records, and full-text search data.
     """
 
-    # Flush on either explicit threshold; KVault's interval remains a fallback.
+    # Buffered events and FTS rows commit after N appends or T seconds.
     DEFAULT_FLUSH_EVERY_N_EVENTS = 4
     DEFAULT_FLUSH_EVERY_N_SECONDS = 1.0
+    # One watermark write covers this many newly assigned event ids.
+    EVENT_ID_BLOCK = 64
 
     def __init__(
         self,
@@ -91,17 +81,23 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
         flush_every_n_events: int | None = None,
         flush_every_n_seconds: float | None = None,
         writer_lock: bool = False,
+        read_only: bool = False,
+        table_policy: Mapping[str, TablePolicy] | None = None,
     ) -> None:
         self._init_affinity()
         self._path = str(coerce_fs_path(path))
-        Path(self._path).parent.mkdir(parents=True, exist_ok=True)
-        # Read-only consumers must not alter status or recency on close.
-        self._readonly = False
+        # Read-only stores open existing files and never write to them.
+        self._readonly = read_only
+        if read_only:
+            Path(self._path).resolve(strict=True)
+        else:
+            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
 
         # Occupancy is enrolled before native open; the writer lock is optional.
         self._ready = False
-        self._enroll_resources(writer_lock=writer_lock)
+        self._enroll_resources(writer_lock=writer_lock and not read_only)
 
+        self._table_policy = resolve_table_policy(table_policy)
         self._flush_every_n_events: int = (
             flush_every_n_events
             if flush_every_n_events is not None
@@ -112,8 +108,11 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
             if flush_every_n_seconds is not None
             else self.DEFAULT_FLUSH_EVERY_N_SECONDS
         )
-        self._unflushed_event_count: int = 0
-        self._last_flush_at: float = time.monotonic()
+        self._flush: EventFlushPipeline | None = None
+        # New ids are assigned above the persisted watermark (``_id_floor``);
+        # ``_reserved_event_id`` is the watermark this store last wrote.
+        self._id_floor = 0
+        self._reserved_event_id = 0
 
         # Per-namespace sequences coexist with one session-wide event identifier.
         self._event_keys = EventKeyIndex()
@@ -121,12 +120,13 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
         self._event_seq: dict[str, int] = {}
         self._channel_seq: dict[str, int] = {}
         self._subagent_runs: dict[str, int] = {}
-        self._global_event_id: int = 0
+        # ``None`` until a read-only store is first asked for its maximum.
+        self._global_event_id: int | None = 0
         # Artifact storage is created only on first use.
         self._artifacts_dir: Path | None = None
         # Companion resources close in LIFO order before the store lock is released.
         self._companion_closers: list[Callable[[], None]] = []
-        # Subscribers observe events only after persistence and FTS indexing.
+        # Subscribers observe events once they are buffered for persistence.
         self._event_subscribers: list[Callable[[str, dict], None]] = []
 
         # Construction failures must not strand tables or the writer lock.
@@ -137,37 +137,27 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
             self._discard_failed_open()
             raise
         self._ready = True
+        logger.debug("SessionStore opened", path=self._path)
 
     @property
     def is_ready(self) -> bool:
         """Whether the tables finished opening (readers must wait until then)."""
         return self._ready
 
-        logger.debug("SessionStore opened", path=self._path)
-
     def _open_tables(self) -> None:
-        """Open every KVault / TextVault table backing this store."""
-        self.meta = KVault(self._path, table="meta")
-        self.meta.enable_auto_pack()
-        self.state = KVault(self._path, table="state")
-        self.state.enable_auto_pack()
-        self.events = KVault(self._path, table="events")
-        self.events.enable_auto_pack()
-        # The passive interval backs up the explicit append-time flush gates.
-        self.events.enable_cache(flush_interval=2.0)
-        self.channels = KVault(self._path, table="channels")
-        self.channels.enable_auto_pack()
-        self.subagents = KVault(self._path, table="subagents")
-        self.subagents.enable_auto_pack()
-        self.jobs = KVault(self._path, table="jobs")
-        self.jobs.enable_auto_pack()
-        self.conversation = KVault(self._path, table="conversation")
-        self.conversation.enable_auto_pack()
-        # Denormalized turn rows accelerate viewers without replacing source events.
-        self.turn_rollup = KVault(self._path, table="turn_rollup")
-        self.turn_rollup.enable_auto_pack()
-        self.fts = TextVault(self._path, table="fts")
-        self.fts.enable_auto_pack()
+        """Open every table; a writable store also gets its flush pipeline."""
+        open_store_tables(
+            self, self._path, read_only=self._readonly, policy=self._table_policy
+        )
+        if self._readonly:
+            return
+        self.events.enable_cache()
+        self._flush = EventFlushPipeline(
+            self.events,
+            self.fts,
+            every_n=self._flush_every_n_events,
+            every_seconds=self._flush_every_n_seconds,
+        )
 
     @property
     def session_id(self) -> str:
@@ -194,12 +184,20 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
             self._companion_closers.append(closer)
 
     def _restore_counters(self) -> None:
-        """Restore sequence counters; persisted counters skip the value scan."""
+        """Restore sequence counters; a clean-close counter skips the value scan.
+
+        A read-only store defers the scan until its maximum is requested.
+        """
         self._event_keys.clear()
         self._branch_maxima.clear()
-        self._global_event_id = restore_event_counters(
+        counters = restore_event_counters(
             self.events, self._event_seq, state=self.state
         )
+        self._id_floor = counters.floor
+        self._reserved_event_id = 0
+        self._global_event_id = counters.exact
+        if self._global_event_id is None and not self._readonly:
+            self._global_event_id = scan_max_event_id(self.events)
         restore_suffix_counters(self.channels, ":m", self._channel_seq)
         restore_subagent_counters(self.subagents, self._subagent_runs)
 
@@ -218,13 +216,23 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
 
     @property
     def global_max_event_id(self) -> int:
-        """Largest event id written to this store across every agent."""
+        """Largest event id persisted or written by this store, across agents."""
+        if self._global_event_id is None:
+            self._global_event_id = scan_max_event_id(self.events)
         return self._global_event_id
 
     def _next_global_event_id(self) -> int:
-        """Get and increment the global monotonic event id counter."""
-        self._global_event_id += 1
+        """Assign the next id above both the known maximum and the watermark."""
+        self._global_event_id = max(self.global_max_event_id, self._id_floor) + 1
         return self._global_event_id
+
+    def _reserve_through(self, event_id: int) -> None:
+        """Persist a watermark covering ``event_id`` before its row is buffered."""
+        if event_id <= self._reserved_event_id:
+            return
+        upto = event_id + self.EVENT_ID_BLOCK
+        if reserve_event_ids(self.state, upto):
+            self._reserved_event_id = upto
 
     def append_event(
         self,
@@ -246,6 +254,41 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
         ``branch_id`` values represent alternate responses; replay selects the
         latest branch unless a caller requests another.
         """
+        if self._flush is None:
+            raise PermissionError(f"Session store is read-only: {self._path}")
+        with self._flush.lock:
+            key, event_id = self._buffer_event(
+                agent,
+                event_type,
+                data,
+                turn_index=turn_index,
+                spawned_in_turn=spawned_in_turn,
+                branch_id=branch_id,
+                parent_branch_path=parent_branch_path,
+            )
+
+        # Subscriber failures cannot invalidate a successfully appended event.
+        for cb in tuple(self._event_subscribers):
+            try:
+                cb(key, data)
+            except Exception as e:
+                logger.warning("Event subscriber failed", error=str(e), exc_info=True)
+
+        self._flush.appended()
+        return key, event_id
+
+    def _buffer_event(
+        self,
+        agent: str,
+        event_type: str,
+        data: dict,
+        *,
+        turn_index: int | None,
+        spawned_in_turn: int | None,
+        branch_id: int | None,
+        parent_branch_path: list[tuple[int, int]] | None,
+    ) -> tuple[str, int]:
+        """Assign the key and id, then buffer the event row and its FTS row."""
         seq = self._next_event_seq(agent)
         key = f"{agent}:e{seq:06d}"
         # Mirrors preserve source event identifiers for consistent cross-node cursors.
@@ -253,10 +296,11 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
         if isinstance(preset_eid, int) and preset_eid > 0:
             event_id = preset_eid
             # Future local identifiers must remain above imported identifiers.
-            if event_id > self._global_event_id:
+            if event_id > self.global_max_event_id:
                 self._global_event_id = event_id
         else:
             event_id = self._next_global_event_id()
+        self._reserve_through(self._global_event_id)
         data["type"] = event_type
         data["event_id"] = event_id
         if turn_index is not None:
@@ -277,60 +321,26 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
 
         text = data.get("content") or data.get("output") or data.get("text") or ""
         if isinstance(text, str) and len(text) > 10:
-            try:
-                self.fts.insert(
-                    text,
-                    {
-                        "event_key": key,
-                        "agent": agent,
-                        "type": event_type,
-                        "event_id": event_id,
-                    },
-                )
-            except Exception as e:
-                logger.warning("FTS indexing failed", error=str(e), exc_info=True)
-
-        # Subscriber failures cannot invalidate a successfully appended event.
-        for cb in tuple(self._event_subscribers):
-            try:
-                cb(key, data)
-            except Exception as e:
-                logger.warning("Event subscriber failed", error=str(e), exc_info=True)
-
-        # Either durability threshold may trigger a cache flush.
-        self._unflushed_event_count += 1
-        self._maybe_flush_events()
-
-        if not self._readonly:
-            persist_event_counter(self.state, event_id)
-
+            self._flush.queue_fts(
+                text,
+                {
+                    "event_key": key,
+                    "agent": agent,
+                    "type": event_type,
+                    "event_id": event_id,
+                },
+            )
         return key, event_id
 
-    def _flush_events_cache(self) -> None:
-        """Flush pending events and reset the durability counters."""
-        self.events.flush_cache()
-        self._unflushed_event_count = 0
-        self._last_flush_at = time.monotonic()
+    @property
+    def _unflushed_event_count(self) -> int:
+        return 0 if self._flush is None else self._flush.unflushed
 
-    def _maybe_flush_events(self) -> None:
-        """Flush the events cache when either durability gate trips."""
-        n_gate = (
-            self._flush_every_n_events > 0
-            and self._unflushed_event_count >= self._flush_every_n_events
-        )
-        t_gate = (
-            self._flush_every_n_seconds > 0
-            and (time.monotonic() - self._last_flush_at) >= self._flush_every_n_seconds
-        )
-        if not (n_gate or t_gate):
+    def _flush_events_cache(self) -> None:
+        """Commit buffered events and FTS rows so reads observe them."""
+        if self._flush is None:
             return
-        try:
-            self.events.flush_cache()
-        except Exception as e:
-            logger.warning("Events flush_cache failed", error=str(e), exc_info=True)
-            return
-        self._unflushed_event_count = 0
-        self._last_flush_at = time.monotonic()
+        self._flush.flush()
 
     def subscribe(self, callback: Callable[[str, dict], None]) -> None:
         """Register a callback fired after each ``append_event``.
@@ -361,7 +371,7 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
     ) -> Iterator[dict]:
         """Iterate values in physical-key order inside the owning store operation."""
         self._flush_events_cache()
-        keys = sorted(iter_kv_keys(self.events, prefix=f"{agent}:e"))
+        keys = scan_keys(self.events, f"{agent}:e")
         return _iter_event_values(self.events, keys, since_event_id)
 
     def max_event_id(self, agent: str) -> int:
@@ -374,7 +384,7 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
         intentionally unused.
         """
         del agent
-        return self._global_event_id
+        return self.global_max_event_id
 
     def get_event_by_id(self, agent: str, event_id: int) -> dict | None:
         """Fetch a current event using a lazily built, per-agent key index.
@@ -411,22 +421,10 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
         Returns list of (key, event_dict) tuples.
         """
         self.events.flush_cache()
-        all_events = []
-        for key_bytes in iter_kv_keys(self.events):
-            key = (
-                key_bytes.decode("utf-8", errors="replace")
-                if isinstance(key_bytes, bytes)
-                else key_bytes
-            )
-            try:
-                evt = self.events[key_bytes]
-                all_events.append((key, evt))
-            except Exception as e:
-                logger.warning(
-                    "Failed to read event in get_all_events",
-                    error=str(e),
-                    exc_info=True,
-                )
+        all_events = [
+            (key_text(key), evt)
+            for key, evt in read_prefix(self.events, what="event in get_all_events")
+        ]
         all_events.sort(key=lambda x: x[1].get("ts", 0))
         return all_events
 
@@ -570,36 +568,28 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
         self.channels[key] = data
 
         content = data.get("content", "")
-        if isinstance(content, str) and len(content) > 10:
-            try:
-                self.fts.insert(
-                    content,
-                    {
-                        "channel_key": key,
-                        "channel": channel,
-                        "sender": data.get("sender", ""),
-                        "type": "channel",
-                    },
-                )
-            except Exception as e:
-                logger.warning(
-                    "FTS indexing channel message failed", error=str(e), exc_info=True
-                )
-
+        # The channel row commits now, so its FTS row does too.
+        if self.fts is not None and isinstance(content, str) and len(content) > 10:
+            insert_fts_rows(
+                self.fts,
+                [
+                    (
+                        content,
+                        {
+                            "channel_key": key,
+                            "channel": channel,
+                            "sender": data.get("sender", ""),
+                            "type": "channel",
+                        },
+                    )
+                ],
+            )
         return key
 
     def get_channel_messages(self, channel: str) -> list[dict]:
         """Get all messages for a channel, ordered."""
-        prefix = f"{channel}:m"
-        result = []
-        for key_bytes in sorted(iter_kv_keys(self.channels, prefix=prefix)):
-            try:
-                result.append(self.channels[key_bytes])
-            except Exception as e:
-                logger.warning(
-                    "Failed to read channel message", error=str(e), exc_info=True
-                )
-        return result
+        rows = read_prefix(self.channels, f"{channel}:m", what="channel message")
+        return [value for _, value in rows]
 
     def next_subagent_run(self, parent: str, name: str) -> int:
         """Get the next run index for a sub-agent."""
@@ -645,29 +635,28 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
         self, *, parent: str | None = None, name: str | None = None
     ) -> list[dict[str, Any]]:
         """Return persisted sub-agent run metadata in key order."""
-        rows: list[dict[str, Any]] = []
-        for key_bytes in sorted(iter_kv_keys(self.subagents)):
-            key = (
-                key_bytes.decode("utf-8", errors="replace")
-                if isinstance(key_bytes, bytes)
-                else key_bytes
-            )
+        wanted: list[str] = []
+        identities: dict[str, tuple[str, str, int]] = {}
+        for key in map(key_text, scan_keys(self.subagents)):
             if not key.endswith(":meta"):
                 continue
-            prefix = key[: -len(":meta")]
-            identity = prefix.rsplit(":", 2)
+            identity = key[: -len(":meta")].rsplit(":", 2)
             if len(identity) != 3:
                 continue
             entry_parent, entry_name, run_text = identity
             try:
                 run = int(run_text)
-                meta = self.subagents[key_bytes]
-            except (KeyError, TypeError, ValueError):
+            except ValueError:
                 continue
             if parent is not None and entry_parent != parent:
                 continue
             if name is not None and entry_name != name:
                 continue
+            wanted.append(key)
+            identities[key] = (entry_parent, entry_name, run)
+        rows: list[dict[str, Any]] = []
+        for key, meta in read_values(self.subagents, wanted, what="sub-agent run"):
+            entry_parent, entry_name, run = identities[key]
             rows.append(
                 {
                     "parent": entry_parent,
@@ -800,17 +789,10 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
         Event namespaces augment ``meta["agents"]`` so hot-plugged creatures are
         visible to resume even when metadata was not updated explicitly.
         """
-        result = {}
-        for key_bytes in iter_kv_keys(self.meta):
-            key = (
-                key_bytes.decode("utf-8", errors="replace")
-                if isinstance(key_bytes, bytes)
-                else key_bytes
-            )
-            try:
-                result[key] = self.meta[key_bytes]
-            except Exception as e:
-                logger.warning("Failed to read meta key", error=str(e), exc_info=True)
+        result = {
+            key_text(key): value
+            for key, value in read_prefix(self.meta, what="meta key")
+        }
         known = list(result.get("agents") or [])
         discovered = self.discover_agents_from_events()
         for name in discovered:
@@ -833,18 +815,28 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
 
     def _event_key_names(self) -> list[str]:
         """Event keys as text; buffered keys are flushed so they are visible."""
-        self.events.flush_cache()
-        return [_key_text(key) for key in iter_kv_keys(self.events)]
+        self._flush_events_cache()
+        return [key_text(key) for key in scan_keys(self.events)]
 
     def search(self, query: str, k: int = 10) -> list[dict]:
         """Search session content via FTS5 (BM25 keyword search).
 
-        Returns list of dicts with score, metadata, and the matched text.
+        Queued FTS rows commit first. Returns dicts with score and metadata.
         """
         results = []
         try:
-            for doc_id, score, meta in self.fts.search(query, k=k):
-                results.append({"doc_id": doc_id, "score": score, "meta": meta})
+            self._flush_events_cache()
+            fts = self.fts
+            if fts is None:
+                fts = open_read_text(Path(self._path), "fts", snapshot=False)
+            if fts is None:
+                return results
+            try:
+                for doc_id, score, meta in fts.search(query, k=k):
+                    results.append({"doc_id": doc_id, "score": score, "meta": meta})
+            finally:
+                if fts is not self.fts:
+                    dispose(fts)
         except Exception as e:
             logger.warning("FTS search failed", error=str(e))
         return results
@@ -855,47 +847,32 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
         return self._path
 
     def flush(self) -> None:
-        """Flush all caches to disk."""
-        self.events.flush_cache()
-        self._unflushed_event_count = 0
-        self._last_flush_at = time.monotonic()
+        """Commit buffered events and FTS rows."""
+        self._flush_events_cache()
 
     def checkpoint(self) -> None:
-        """Flush every table cache and checkpoint the WAL — without closing.
+        """Commit buffered rows and checkpoint the WAL — without closing.
 
         Raw file copies omit cached and WAL-only rows. Call this before copying
         bytes from an open store so metadata and recent events are complete.
         """
-        for table in (
-            self.events,
-            self.meta,
-            self.state,
-            self.channels,
-            self.subagents,
-            self.jobs,
-            self.conversation,
-            self.turn_rollup,
-        ):
-            try:
-                table.flush_cache()
-            except Exception:  # pragma: no cover - checkpoint continues per table
-                logger.warning("checkpoint: flush_cache failed", exc_info=True)
-            try:
-                table.checkpoint()
-            except Exception:  # pragma: no cover - checkpoint continues per table
-                logger.warning("checkpoint: WAL checkpoint failed", exc_info=True)
-        self._unflushed_event_count = 0
-        self._last_flush_at = time.monotonic()
+        try:
+            self._flush_events_cache()
+        except Exception:  # pragma: no cover - the checkpoint still runs
+            logger.warning("checkpoint: flush failed", exc_info=True)
+        # One WAL serves every table of the file.
+        try:
+            self.events.checkpoint()
+        except Exception:  # pragma: no cover - checkpoint is best effort
+            logger.warning("checkpoint: WAL checkpoint failed", exc_info=True)
 
     @classmethod
     def open_readonly(cls, path: "str | Path") -> "SessionStore":
-        """Open a store whose close operation never mutates session metadata.
+        """Open an existing session read-only: no writes, no sidecars on close.
 
-        Listing and viewer consumers must use this mode to preserve recency.
+        Listing and viewer consumers use this mode to preserve recency.
         """
-        store = cls(path)
-        store._readonly = True
-        return store
+        return cls(path, read_only=True)
 
     def close(self, update_status: bool = True) -> None:
         """Idempotently flush and close the store and companion resources.
@@ -913,8 +890,19 @@ class SessionStore(StoreAffinityMixin, StoreResourceMixin, BranchIndexMixin):
         try:
             if self._readonly:
                 update_status = False
-            if not self._readonly:
-                persist_event_counter(self.state, self._global_event_id)
+            if self._flush is not None:
+                # The clean-close counter is written only once every row is committed.
+                try:
+                    self._flush.close()
+                    persist_event_counter(
+                        self.state, self.global_max_event_id, self._reserved_event_id
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to commit buffered events on close",
+                        error=str(e),
+                        exc_info=True,
+                    )
             if update_status:
                 try:
                     self.update_status("paused")

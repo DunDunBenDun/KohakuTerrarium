@@ -196,13 +196,13 @@ async def test_cancelled_open_closes_unclaimed_vaults(
     release = threading.Event()
     returned = threading.Event()
     references = []
-    daemons = []
+    pipelines = []
     opener = resume_async._open_store_with_migration
 
     def gated_open(*args, **kwargs):
         store = opener(*args, **kwargs)
         references.append(weakref.ref(store.events))
-        daemons.append(store.events._daemon_thread)
+        pipelines.append(store._flush)
         loop.call_soon_threadsafe(entered.set)
         assert release.wait(30)
         returned.set()
@@ -223,7 +223,7 @@ async def test_cancelled_open_closes_unclaimed_vaults(
         assert returned.is_set()
         gc.collect()
         assert all(ref() is None or ref()._closed for ref in references)
-        assert all(not thread.is_alive() for thread in daemons)
+        assert all(p._closed and p._timer is None for p in pipelines)
     finally:
         release.set()
         if not task.done():

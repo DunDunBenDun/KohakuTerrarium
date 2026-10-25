@@ -1150,11 +1150,12 @@ class TestLoadConversationFallback:
         store.append_event("alice", "user_message", {"content": "dropped"})
         store.close()
 
-        # Simulate the crash window: the counter persisted BEHIND the
-        # table's true max.
+        # A counter and clean-close marker that both lag the table's true max.
         state = KVault(str(path), table="state")
         try:
-            state["counters:max_event_id"] = eid
+            state.put_many(
+                [("counters:max_event_id", eid), ("counters:exact_event_id", eid)]
+            )
         finally:
             state.close()
 

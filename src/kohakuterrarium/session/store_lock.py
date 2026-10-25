@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from kohakuterrarium.errors import SessionLockedError
+from kohakuterrarium.session.vault_handles import dispose
 from kohakuterrarium.utils.file_lock import FileLock, FileLockBusy
 from kohakuterrarium.utils.logging import get_logger
 
@@ -58,14 +59,14 @@ def close_tables(
     lock: "FileLock | None",
     companion_closers: Iterable[Callable[[], None]] = (),
 ) -> bool:
-    """Close every KVault table, drop native handles, release the lock.
+    """Close companions (LIFO), then every table and the FTS index; release the lock.
 
-    Companion resources close first in LIFO order. Native vault handles are
-    explicitly dropped because their public close paths can retain SQLite file
-    handles on Windows. The writer lock is released even if cleanup fails.
-    Return True only when companions succeeded and native handles were dropped.
+    A table close failure propagates after the remaining tables were attempted.
+    The writer lock is released even if cleanup fails. Return True only when
+    companions succeeded and every native handle was released.
     """
     released = True
+    primary: BaseException | None = None
     try:
         for closer in reversed(list(companion_closers)):
             try:
@@ -73,27 +74,18 @@ def close_tables(
             except Exception:
                 released = False
                 logger.warning("Companion closer failed at close", exc_info=True)
-        for table in tables:
-            daemon = getattr(table, "_daemon_thread", None)
-            table.close()
-            if daemon is not None and daemon.is_alive():
-                released = False
-        for table in tables:
+        for table in (*tables, fts):
+            if table is None:
+                continue
             try:
-                del table._inner
-            except AttributeError:
-                pass
-            except Exception:
+                if not dispose(table):
+                    released = False
+            except BaseException as exc:
                 released = False
-                logger.warning("Native table handle drop failed", exc_info=True)
-        if fts is not None:
-            try:
-                del fts._vault
-            except AttributeError:
-                pass
-            except Exception:
-                released = False
-                logger.warning("Native FTS handle drop failed", exc_info=True)
+                if primary is None:
+                    primary = exc
+        if primary is not None:
+            raise primary
     except BaseException:
         released = False
         raise
@@ -102,63 +94,28 @@ def close_tables(
     return released
 
 
-def _drop_native_handle(obj: Any, attr: str, *, table: str, path: str) -> bool:
-    try:
-        delattr(obj, attr)
-    except AttributeError:
-        return False
-    except Exception:
-        logger.warning(
-            "partial-open native handle drop failed",
-            table=table,
-            path=path,
-            exc_info=True,
-        )
-        return False
-    return True
+def discard_partial_open(handles: Iterable[tuple[str, Any]], path: str) -> bool:
+    """Release handles opened before a store construction failure.
 
-
-def discard_partial_open(tables: Iterable[tuple[str, Any]], fts, path: str) -> bool:
-    """Release tables opened before a store construction failure.
-
-    ``tables`` pairs each attribute name with its KVault, or ``None`` when the
-    failure happened before that table opened. Every step is best-effort so one
-    failing table cannot keep the others, or the events cache daemon, alive.
-    Return True only after every table and FTS handle was assigned and dropped.
+    ``handles`` pairs every expected attribute name with its handle, or ``None``
+    when the failure happened before it opened. Every step is best-effort so one
+    failing handle cannot keep the others alive. Return True only after every
+    expected handle was assigned and released.
     """
     released = True
-    for name, table in tables:
+    for name, table in handles:
         if table is None:
             released = False
             continue
-        daemon = getattr(table, "_daemon_thread", None)
-        for step in (table.disable_cache, table.close):
-            try:
-                step()
-            except Exception:
+        try:
+            if not dispose(table):
                 released = False
-                logger.warning(
-                    "partial-open cleanup step failed",
-                    table=name,
-                    path=path,
-                    exc_info=True,
-                )
-        if daemon is not None and daemon.is_alive():
+        except Exception:
             released = False
-        if not _drop_native_handle(table, "_inner", table=name, path=path):
-            released = False
-    if fts is None:
-        return False
-    try:
-        fts.close()
-    except Exception:
-        released = False
-        logger.warning(
-            "partial-open cleanup step failed",
-            table="fts",
-            path=path,
-            exc_info=True,
-        )
-    if not _drop_native_handle(fts, "_vault", table="fts", path=path):
-        released = False
+            logger.warning(
+                "partial-open cleanup step failed",
+                table=name,
+                path=path,
+                exc_info=True,
+            )
     return released

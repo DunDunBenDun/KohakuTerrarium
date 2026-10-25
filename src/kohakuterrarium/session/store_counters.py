@@ -1,13 +1,13 @@
 """Rebuild session sequence counters from persisted KVault keys."""
 
+from dataclasses import dataclass
+
 from kohakuvault import KVault
 
+from kohakuterrarium.session.vault_io import read_prefix, scan_keys
 from kohakuterrarium.utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-# Truncated key scans can restore stale counters and overwrite existing rows.
-_KV_KEYS_LIMIT: int = 2**31 - 1
 
 
 def _decode_key(key_bytes: bytes | str) -> str:
@@ -17,40 +17,59 @@ def _decode_key(key_bytes: bytes | str) -> str:
     return key_bytes
 
 
+# No event id ever assigned in the file exceeds this watermark.
+MAX_EVENT_ID_KEY = "counters:max_event_id"
+# Highest persisted event id at the last clean close; valid only while it
+# equals the watermark.
+EXACT_EVENT_ID_KEY = "counters:exact_event_id"
+
+
+@dataclass(frozen=True, slots=True)
+class EventIdCounters:
+    """Persisted event-id state read at open.
+
+    ``exact`` is the highest persisted id when the clean-close marker matches
+    the watermark, else ``None`` (a scan is needed). ``floor`` is the watermark:
+    new ids must be assigned above it.
+    """
+
+    exact: int | None
+    floor: int
+
+
+def _read_counter(state: KVault, key: str) -> int | None:
+    try:
+        value = state.get(key)
+    except Exception as e:
+        logger.warning(
+            "Failed to read persisted event counter", error=str(e), exc_info=True
+        )
+        return None
+    return value if isinstance(value, int) else None
+
+
 def restore_event_counters(
     events: KVault,
     event_seq: dict[str, int],
     state: KVault | None = None,
-) -> int:
-    """Restore per-agent event sequences and return the largest event ID.
+) -> EventIdCounters:
+    """Restore per-agent event sequences and read the persisted id counters.
 
-    ``event_seq`` is updated in place from ``{agent}:e{seq}`` keys. With a
-    ``state`` table the global ``max_event_id`` is read from the
-    append-time-persisted counter; only when that slot is absent (sessions
-    last written by an older version) does the fallback full scan read
-    every event value. Event-seq counters always derive from the key list,
-    which does not require reading values.
+    ``event_seq`` is updated in place from ``{agent}:e{seq}`` keys; event
+    values are never read here.
     """
-    if state is not None:
-        try:
-            persisted = state.get("counters:max_event_id")
-        except Exception as e:
-            logger.warning(
-                "Failed to read persisted event counter",
-                error=str(e),
-                exc_info=True,
-            )
-            persisted = None
-        if isinstance(persisted, int):
-            _restore_event_seq_from_keys(events, event_seq)
-            return persisted
-
     _restore_event_seq_from_keys(events, event_seq)
-    return _scan_max_event_id(events)
+    if state is None:
+        return EventIdCounters(None, 0)
+    watermark = _read_counter(state, MAX_EVENT_ID_KEY)
+    exact = _read_counter(state, EXACT_EVENT_ID_KEY)
+    if watermark is not None and exact == watermark:
+        return EventIdCounters(exact, watermark)
+    return EventIdCounters(None, watermark or 0)
 
 
 def _restore_event_seq_from_keys(events: KVault, event_seq: dict[str, int]) -> None:
-    for key_bytes in events.keys(limit=_KV_KEYS_LIMIT):
+    for key_bytes in scan_keys(events):
         key = _decode_key(key_bytes)
         parts = key.rsplit(":e", 1)
         if len(parts) == 2:
@@ -63,35 +82,54 @@ def _restore_event_seq_from_keys(events: KVault, event_seq: dict[str, int]) -> N
                 pass
 
 
-def _scan_max_event_id(events: KVault) -> int:
+def scan_max_event_id(events: KVault) -> int:
+    """The largest ``event_id`` among persisted event values."""
     max_event_id = 0
-    for key_bytes in events.keys(limit=_KV_KEYS_LIMIT):
-        try:
-            evt = events[key_bytes]
-            if isinstance(evt, dict):
-                eid = evt.get("event_id")
-                if isinstance(eid, int) and eid > max_event_id:
-                    max_event_id = eid
-        except Exception as e:
-            logger.warning(
-                "Failed to read event for id scan",
-                error=str(e),
-                exc_info=True,
-            )
+    for _, evt in read_prefix(events, what="event for id scan"):
+        if isinstance(evt, dict):
+            eid = evt.get("event_id")
+            if isinstance(eid, int) and eid > max_event_id:
+                max_event_id = eid
     return max_event_id
 
 
-def persist_event_counter(state: KVault, max_event_id: int) -> None:
-    """Persist the global max event id so reopen skips the value scan."""
+def persist_event_counter(state: KVault, max_event_id: int, reserved: int) -> bool:
+    """Record a clean close whose persisted maximum is ``max_event_id``.
+
+    ``reserved`` is the watermark this writer reserved. When no other writer
+    raised the watermark past it, the watermark drops to the exact maximum
+    with the marker in one batch; otherwise only the marker is written, so it
+    mismatches and the next open scans.
+    """
     try:
-        state["counters:max_event_id"] = max_event_id
+        watermark = state.get(MAX_EVENT_ID_KEY)
+        if not isinstance(watermark, int) or watermark <= max(reserved, max_event_id):
+            state.put_many(
+                [(MAX_EVENT_ID_KEY, max_event_id), (EXACT_EVENT_ID_KEY, max_event_id)]
+            )
+        else:
+            state[EXACT_EVENT_ID_KEY] = max_event_id
+        return True
     except Exception as e:
         logger.warning("Failed to persist event counter", error=str(e), exc_info=True)
+        return False
+
+
+def reserve_event_ids(state: KVault, upto: int) -> bool:
+    """Raise the persisted watermark to at least ``upto``."""
+    try:
+        watermark = state.get(MAX_EVENT_ID_KEY)
+        if not isinstance(watermark, int) or watermark < upto:
+            state[MAX_EVENT_ID_KEY] = upto
+        return True
+    except Exception as e:
+        logger.warning("Failed to reserve event ids", error=str(e), exc_info=True)
+        return False
 
 
 def restore_suffix_counters(table: KVault, sep: str, counter: dict[str, int]) -> None:
     """Restore suffix-based sequence counters in place."""
-    for key_bytes in table.keys(limit=_KV_KEYS_LIMIT):
+    for key_bytes in scan_keys(table):
         key = _decode_key(key_bytes)
         parts = key.rsplit(sep, 1)
         if len(parts) == 2:
@@ -109,7 +147,7 @@ def restore_subagent_counters(subagents: KVault, runs: dict[str, int]) -> None:
 
     ``runs`` is updated in place from ``{parent}:{name}:{run}:meta`` keys.
     """
-    for key_bytes in subagents.keys(limit=_KV_KEYS_LIMIT):
+    for key_bytes in scan_keys(subagents):
         key = _decode_key(key_bytes)
         if key.endswith(":meta"):
             parts = key[: -len(":meta")].rsplit(":", 2)

@@ -4,9 +4,7 @@ from typing import Any
 
 from kohakuvault import KVault
 
-from kohakuterrarium.utils.logging import get_logger
-
-logger = get_logger(__name__)
+from kohakuterrarium.session.vault_io import read_prefix
 
 
 def turn_rollup_key(agent: str, turn_index: int) -> str:
@@ -41,17 +39,5 @@ def get_turn_rollup(table: KVault, agent: str, turn_index: int) -> dict | None:
 
 def list_turn_rollups(table: KVault, agent: str) -> list[dict]:
     """List every rollup row for an agent, ordered by ``turn_index``."""
-    prefix = f"{agent}:turn:"
-    out: list[dict] = []
-    for key_bytes in sorted(table.keys(prefix=prefix, limit=2**31 - 1)):
-        try:
-            val = table[key_bytes]
-            if isinstance(val, dict):
-                out.append(val)
-        except Exception as e:
-            logger.debug(
-                "Failed to read turn rollup row",
-                error=str(e),
-                exc_info=True,
-            )
-    return out
+    rows = read_prefix(table, f"{agent}:turn:", what="turn rollup row")
+    return [val for _, val in rows if isinstance(val, dict)]

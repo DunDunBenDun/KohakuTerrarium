@@ -94,14 +94,10 @@ class SessionMemory:
             raise
 
     def _open_indexes(self, db_path: str) -> None:
-        self._fts = self._resources.open(
-            TextVault, db_path, table="memory_fts", native_attr="_vault"
-        )
+        self._fts = self._resources.open(TextVault, db_path, table="memory_fts")
         self._fts.enable_auto_pack()
 
-        self._state = self._resources.open(
-            KVault, db_path, table="memory_state", native_attr="_inner"
-        )
+        self._state = self._resources.open(KVault, db_path, table="memory_state")
         self._state.enable_auto_pack()
 
         # Dimension-specific tables prevent incompatible embedding models from mixing.
@@ -113,7 +109,6 @@ class SessionMemory:
                 db_path,
                 table=f"memory_vec_{dims}d",
                 dimensions=dims,
-                native_attr="_vault",
             )
             self._state["vec_dimensions"] = dims
         elif not self._has_vectors:
@@ -126,7 +121,6 @@ class SessionMemory:
                         db_path,
                         table=f"memory_vec_{saved_dims}d",
                         dimensions=saved_dims,
-                        native_attr="_vault",
                     )
             except (KeyError, Exception):
                 pass
@@ -138,9 +132,7 @@ class SessionMemory:
     def close(self) -> None:
         """Release the native SQLite handles this index opened.
 
-        These indexes own handles separate from ``SessionStore``. Native references
-        are dropped explicitly because public vault close paths can retain Windows
-        file locks until garbage collection.
+        These indexes own handles separate from ``SessionStore``.
         """
         self._resources.close()
 
@@ -176,7 +168,7 @@ class SessionMemory:
             # Python sqlite3 must not open a live vault: separate SQLite copies
             # can invalidate each other's WAL/locking state on POSIX.
             reader = self._resources.open(
-                TextVault, self._path, table=f"memory_vec_{dims}d", native_attr="_vault"
+                TextVault, self._path, table=f"memory_vec_{dims}d"
             )
             try:
                 ids = reader.keys(limit=vault.count())
@@ -279,7 +271,6 @@ class SessionMemory:
                 self._path,
                 table=f"memory_vec_{embedder.dimensions}d",
                 dimensions=embedder.dimensions,
-                native_attr="_vault",
             )
             if previous is not None:
                 self._resources.drop(previous)

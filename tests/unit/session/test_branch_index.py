@@ -20,6 +20,10 @@ class ObservedTable:
         self.on_read()
         return self.table[key]
 
+    def get_many(self, keys, default=None):
+        self.on_read()
+        return self.table.get_many(keys, default)
+
     def __setitem__(self, key, value):
         self.table[key] = value
 
@@ -158,8 +162,9 @@ def test_append_during_cold_scan_returns_latest_maximum(tmp_path):
 def test_query_waits_for_native_write_publication(tmp_path, warm):
     store = SessionStore(tmp_path / f"query_wait_{warm}.kohakutr", writer_lock=True)
     original_table = store.events
-    signalled_lock = SignalledLock(store._branch_maxima._lock)
-    store._branch_maxima._lock = signalled_lock
+    # A query flushes the append pipeline first, so it waits on that lock.
+    signalled_lock = SignalledLock(store._flush._lock)
+    store._flush._lock = signalled_lock
 
     written, release = threading.Event(), threading.Event()
 
@@ -229,13 +234,13 @@ def test_cold_scan_paused_does_not_block_append_and_retries(tmp_path):
             self.scans += 1
             return self.table.keys(**kwargs)
 
-        def __getitem__(self, key):
-            row = self.table[key]
+        def get_many(self, keys, default=None):
+            rows = self.table.get_many(keys, default)
             if self.once:
                 self.once = False
                 entered.set()
                 assert release.wait(5)
-            return row
+            return rows
 
         def __setitem__(self, key, value):
             self.table[key] = value
@@ -367,12 +372,15 @@ def test_failed_write_during_cold_scan_forces_rebuild(tmp_path):
             return original_table.keys(**kwargs)
 
         def __getitem__(self, key):
-            row = original_table[key]
+            return original_table[key]
+
+        def get_many(self, keys, default=None):
+            rows = original_table.get_many(keys, default)
             if self.once:
                 self.once = False
                 entered.set()
                 assert release.wait(5)
-            return row
+            return rows
 
         def __setitem__(self, key, value):
             original_table[key] = value

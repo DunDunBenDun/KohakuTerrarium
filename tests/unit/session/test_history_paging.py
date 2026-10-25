@@ -349,7 +349,7 @@ class _FakeEvents:
     def flush_cache(self):
         pass
 
-    def keys(self, prefix=None, limit=None):
+    def keys(self, prefix=None, limit=None, *, batch_size=1024):
         prefix = prefix or ""
         return [
             k.encode("utf-8") for k in sorted(self._records) if k.startswith(prefix)

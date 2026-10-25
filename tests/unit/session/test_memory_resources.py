@@ -10,6 +10,7 @@ import kohakuterrarium.session.memory as memory_module
 from kohakuterrarium.session.memory import SessionMemory
 from kohakuterrarium.session.resource_gate import GATE, try_fast
 from kohakuterrarium.session.store import SessionStore
+from kohakuterrarium.session.vault_handles import dispose, is_disposed
 
 
 def assert_idle(path):
@@ -63,15 +64,9 @@ def test_native_drop_faults_keep_memory_uncertain(
         memory.close()
         assert try_fast(path, eligible=True).reason == "legacy_release_uncertain"
     finally:
-        for handle, attr in (
-            (memory._fts, "_vault"),
-            (memory._state, "_inner"),
-            (memory._vec, "_vault"),
-        ):
-            if handle is not None and hasattr(handle, attr):
-                if attr == "_inner":
-                    handle.close()
-                delattr(handle, attr)
+        for handle in (memory._fts, memory._state, memory._vec):
+            if handle is not None:
+                dispose(handle)
 
 
 def test_memory_cannot_reopen_native_tables_after_close(tmp_path):
@@ -80,9 +75,7 @@ def test_memory_cannot_reopen_native_tables_after_close(tmp_path):
     del memory._fts._vault
     memory.close()
     with pytest.raises(RuntimeError, match="closed"):
-        memory._resources.open(
-            memory_module.TextVault, str(path), table="extra", native_attr="_vault"
-        )
+        memory._resources.open(memory_module.TextVault, str(path), table="extra")
     assert_idle(path)
 
 
@@ -121,7 +114,7 @@ def test_partial_native_constructor_failure_stays_uncertain(tmp_path, monkeypatc
     monkeypatch.setattr(memory_module, "KVault", fail_state)
     with pytest.raises(OSError, match="native open failed"):
         SessionMemory(str(path))
-    assert opened and not hasattr(opened[0], "_vault")
+    assert opened and is_disposed(opened[0])
     assert try_fast(path, eligible=True).reason == "legacy_release_uncertain"
     assert GATE.snapshot(path).legacy_active == 0
 
@@ -150,7 +143,7 @@ def test_replacing_vectors_does_not_retain_native_handles(tmp_path):
         memory._set_embedder(embedder)
         old = memory._vec
         memory._set_embedder(embedder)
-        assert not hasattr(old, "_vault")
+        assert is_disposed(old)
         assert len(memory._resources._handles) == 3
     finally:
         memory.close()
@@ -181,7 +174,6 @@ def test_memory_close_cannot_release_during_lazy_open(tmp_path):
             factory,
             str(path),
             table="lazy",
-            native_attr="_inner",
         )
         closing = None
         try:
@@ -196,9 +188,7 @@ def test_memory_close_cannot_release_during_lazy_open(tmp_path):
             if closing is not None:
                 closing.result(timeout=5)
             for table in opened:
-                if hasattr(table, "_inner"):
-                    table.close()
-                    del table._inner
+                dispose(table)
     assert_idle(path)
 
 
