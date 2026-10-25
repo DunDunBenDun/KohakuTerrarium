@@ -7,6 +7,7 @@
 import { nextTick, onBeforeUnmount, ref, shallowRef, watch } from "vue"
 import MarkdownIt from "markdown-it"
 import markdownItKatex from "@vscode/markdown-it-katex"
+import markdownItCjkFriendly from "markdown-it-cjk-friendly"
 import hljs from "highlight.js"
 
 import { applyExternalLinkRule, resolvePlatformLink, shouldOpenThroughHost } from "./externalLinks.js"
@@ -147,6 +148,10 @@ md.renderer.rules.fence = (tokens, idx, options, env, renderer) => {
   }
   return codeBlockHtml(lang, fenceHtml)
 }
+
+// CJK text puts punctuation right inside emphasis ("**重點：**正文"), which plain
+// CommonMark flanking rules leave unrendered.
+md.use(markdownItCjkFriendly)
 
 const katexPlugin = typeof markdownItKatex === "function" ? markdownItKatex : markdownItKatex?.default
 if (typeof katexPlugin === "function") {
