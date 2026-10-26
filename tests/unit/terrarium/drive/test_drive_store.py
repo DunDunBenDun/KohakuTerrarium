@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -834,6 +835,31 @@ class TestMigrationLockTimeoutBound:
             assert probe_calls == []  # deadline enforced BEFORE the slow probe
         finally:
             holder.release()
+
+    def test_probe_budget_never_exceeds_the_configured_cap(self, tmp_path, monkeypatch):
+        # A float deadline can round above the cap, so "t0 + 0.05 - t0" > 0.05.
+        from kohakuterrarium.terrarium.drive import store_migration as sm
+        from kohakuterrarium.utils.file_lock import FileLock
+
+        budgets: list[float | None] = []
+
+        def probe(_path, *, timeout_s=None):
+            budgets.append(timeout_s)
+            return True
+
+        frozen = SimpleNamespace(monotonic=lambda: 0.1, sleep=lambda _s: None)
+        monkeypatch.setattr(sm, "_sidecar_is_complete", probe)
+        monkeypatch.setattr(sm, "time", frozen)
+        monkeypatch.setattr(sm, "_MIGRATE_LOCK_TIMEOUT_S", 0.05)
+        sidecar = str(tmp_path / "capped.kohakutr.drives")
+        holder = FileLock(sidecar + ".migrate-lock")
+        holder.acquire()
+        try:
+            with sm._migration_lock(sidecar) as acquired:
+                assert acquired is False
+        finally:
+            holder.release()
+        assert budgets == [0.05]
 
 
 class TestAbandonedMigrationTempSweep:
