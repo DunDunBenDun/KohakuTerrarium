@@ -172,6 +172,7 @@ _TRANSIENT_MARKERS = (
 
 
 _PROGRAMMING_ERRORS = (TypeError, AttributeError, NameError, NotImplementedError)
+_RAW_BODY_LIMIT = 2000
 
 
 def classify_openai_error(exc: BaseException) -> ErrorClass:
@@ -236,6 +237,11 @@ def classify_openai_error(exc: BaseException) -> ErrorClass:
     return ErrorClass.UNKNOWN
 
 
+def provider_error_text(exc: BaseException) -> str:
+    """The provider's own refusal text, including a non-JSON response body."""
+    return " ".join(_error_fragments(exc, _extract_error_payload(exc)))
+
+
 def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
     return any(needle in text for needle in needles)
 
@@ -257,14 +263,32 @@ def _extract_error_payload(exc: BaseException) -> dict[str, Any]:
     return {}
 
 
+def _raw_body_text(exc: BaseException) -> str:
+    """The non-JSON response body an SDK error carries, as a bounded excerpt."""
+    raw = getattr(exc, "body", None)
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    if not isinstance(raw, str):
+        return ""
+    return raw[:_RAW_BODY_LIMIT]
+
+
 def _stringify_error(exc: BaseException, body: dict[str, Any]) -> str:
-    # Include the class name because wrapped transport exceptions may have empty text.
-    pieces = [str(exc), type(exc).__name__]
+    # The class name carries wrapped transport exceptions that have empty text.
+    return " ".join([*_error_fragments(exc, body), type(exc).__name__])
+
+
+def _error_fragments(exc: BaseException, body: dict[str, Any]) -> list[str]:
+    """What an SDK error says: its text, a non-JSON body, then the payload fields."""
+    pieces = [str(exc)]
+    # Proxy rejections answer with HTML pages, which newer SDKs keep only in ``body``.
+    if raw := _raw_body_text(exc):
+        pieces.append(raw)
     for key in ("message", "code", "type"):
         value = body.get(key)
         if value:
             pieces.append(str(value))
-    return " ".join(pieces)
+    return pieces
 
 
 def backoff_delay(attempt: int, policy: RetryPolicy) -> float:
