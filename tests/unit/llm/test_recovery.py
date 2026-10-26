@@ -22,6 +22,7 @@ from kohakuterrarium.llm.recovery import (
     classify_openai_error,
     drop_last_tool_round,
     format_drop_placeholder,
+    provider_error_text,
 )
 
 
@@ -265,6 +266,41 @@ class TestClassifyOpenAIError:
             pass
 
         assert classify_openai_error(RemoteProtocolError()) == ErrorClass.TRANSIENT
+
+    def test_oversize_marker_in_a_non_json_body_decides(self):
+        # openai 3.38 stopped folding a string body into str(exc).
+        exc = _HTTPError(
+            "Error code: 400",
+            status_code=400,
+            body="<html><title>413 Request Entity Too Large</title></html>",
+        )
+        assert classify_openai_error(exc) == ErrorClass.OVERSIZE
+
+
+class TestProviderErrorText:
+    def test_non_json_body_reaches_the_diagnostic_text(self):
+        body = "<html><head><title>413 Request Entity Too Large</title></head></html>"
+        exc = _HTTPError("Error code: 413", status_code=413, body=body)
+        assert body in provider_error_text(exc)
+
+    def test_json_body_contributes_fields_not_its_repr(self):
+        body = {"error": {"message": "string too long", "type": "invalid_request"}}
+        text = provider_error_text(_HTTPError("Error code: 400", 400, body))
+        assert "string too long" in text and "invalid_request" in text
+        assert "{'error'" not in text
+
+    def test_bytes_body_is_decoded(self):
+        exc = _HTTPError("Error code: 413", 413, b"413 Request Entity Too Large")
+        assert "413 Request Entity Too Large" in provider_error_text(exc)
+
+    def test_message_carries_an_exception_without_a_body_or_payload(self):
+        # The note goes to the model, so no SDK class name leaks into it.
+        exc = _HTTPError("connection reset", 500)
+        assert provider_error_text(exc) == "connection reset"
+
+    def test_a_huge_body_is_bounded(self):
+        exc = _HTTPError("Error code: 413", 413, "x" * 10_000)
+        assert len(provider_error_text(exc)) <= 2_100
 
 
 class TestRetryPolicy:

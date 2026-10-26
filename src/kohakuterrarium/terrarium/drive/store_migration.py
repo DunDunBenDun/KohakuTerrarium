@@ -227,12 +227,17 @@ def _migration_lock(sidecar_path: str):
     """
     lock = FileLock(sidecar_path + ".migrate-lock")
     deadline = time.monotonic() + _MIGRATE_LOCK_TIMEOUT_S
+
+    def remaining_budget() -> float:
+        """Budget left before the deadline, never more than the configured bound."""
+        return min(deadline - time.monotonic(), _MIGRATE_LOCK_TIMEOUT_S)
+
     while True:
         try:
             lock.acquire()
             break
         except FileLockBusy:
-            remaining = deadline - time.monotonic()
+            remaining = remaining_budget()
             if remaining <= 0:
                 raise TimeoutError(
                     f"Drive migration lock {lock.path.name!r} is held past the "
@@ -240,7 +245,7 @@ def _migration_lock(sidecar_path: str):
                 )
             complete = _sidecar_is_complete(sidecar_path, timeout_s=remaining)
             # SQLite's busy timeout excludes connection setup and scheduling time.
-            remaining = deadline - time.monotonic()
+            remaining = remaining_budget()
             if remaining <= 0:
                 raise TimeoutError(
                     f"Drive migration lock {lock.path.name!r} is held past the "

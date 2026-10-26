@@ -10,7 +10,12 @@ from typing import Any, AsyncIterator, Callable, Protocol, runtime_checkable
 
 from kohakuterrarium.llm.message import Message
 from kohakuterrarium.llm.context_repair import CONTENT_REPAIR_LADDER, ContextRepair
-from kohakuterrarium.llm.recovery import ErrorClass, RetryPolicy, drop_last_tool_round
+from kohakuterrarium.llm.recovery import (
+    ErrorClass,
+    RetryPolicy,
+    drop_last_tool_round,
+    provider_error_text,
+)
 from kohakuterrarium.llm.request_budget import (
     MAX_REQUEST_SHRINKS,
     RequestCeiling,
@@ -290,14 +295,20 @@ class BaseLLMProvider:
     ) -> list[dict[str, Any]] | None:
         """Return a reduced request for an overflow, oversize or content rejection.
 
-        ``None`` means no stage is left and the error should be raised.
+        ``None`` means no stage is left and the error should be raised. The note
+        written into the reduced request reports the provider's own refusal text,
+        including a non-JSON response body.
         """
         if cls is ErrorClass.OVERFLOW:
             return await self._recover_from_overflow(current, state)
         if cls is ErrorClass.OVERSIZE:
-            return await self._recover_from_oversize(current, state, str(exc))
+            return await self._recover_from_oversize(
+                current, state, provider_error_text(exc)
+            )
         if cls is ErrorClass.CONTENT:
-            return self._recover_from_content_error(current, state, str(exc))
+            return self._recover_from_content_error(
+                current, state, provider_error_text(exc)
+            )
         return None
 
     def request_ceiling(self) -> RequestCeiling:
