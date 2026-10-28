@@ -107,8 +107,8 @@ class ToolGuard(BasePlugin):
         super().__init__()
         self.deny_patterns = deny_patterns
 
-    async def pre_tool_execute(self, name: str, args: dict) -> dict | None:
-        if name != "bash":
+    async def pre_tool_execute(self, args: dict, **kwargs) -> dict | None:
+        if kwargs.get("tool_name") != "bash":
             return None
         command = args.get("command", "")
         for pat in self.deny_patterns:

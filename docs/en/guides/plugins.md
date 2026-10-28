@@ -90,6 +90,10 @@ Subclass `BasePlugin` and implement any of these hooks. All are async unless not
 | `contribute_termination_check()` | return callable or `None` | Vote on whether the run should stop |
 | `get_tool_visibility(context)` | return `ToolVisibility \| None` | Restrict the per-request native tool catalog (`allowed_tools` / `allowed_subagents`; `None` = unrestricted) |
 
+`pre_tool_execute` / `post_tool_execute` receive keyword arguments that
+include `tool_name`, `tool` (the tool instance) and, in the main agent,
+`job_id` and `context`. Always accept `**kwargs`; new keywords may be added.
+
 Fire-and-forget callbacks (no return value, no ability to modify):
 
 - `on_agent_start`, `on_agent_stop`
@@ -127,8 +131,8 @@ class ToolGuard(BasePlugin):
         super().__init__()
         self.deny_patterns = deny_patterns
 
-    async def pre_tool_execute(self, name: str, args: dict) -> dict | None:
-        if name != "bash":
+    async def pre_tool_execute(self, args: dict, **kwargs) -> dict | None:
+        if kwargs.get("tool_name") != "bash":
             return None
         command = args.get("command", "")
         for pat in self.deny_patterns:

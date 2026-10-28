@@ -121,8 +121,8 @@ async def get_content(self, context: PromptContext) -> str | None
 from kohakuterrarium.modules.plugin import BasePlugin, PluginBlockError
 
 class GuardPlugin(BasePlugin):
-    async def pre_tool_execute(self, name, args):
-        if name == "bash" and "rm -rf" in args.get("command", ""):
+    async def pre_tool_execute(self, args, **kwargs):
+        if kwargs.get("tool_name") == "bash" and "rm -rf" in args.get("command", ""):
             raise PluginBlockError("unsafe command")
         return None  # 保持 args 不變
 ```
