@@ -168,6 +168,7 @@ class Agent(
         self._trigger_backlog_stash: list[TriggerEvent] = []
         self._bg_dispatch_acks: list[str] = []
         self.trigger_manager = TriggerManager(self._process_event)
+        self.trigger_manager.set_host_agent(self)
         # A trigger drains its whole ready backlog on fire and admits the
         # extras here so the burst is absorbed in ONE turn (UXI-08b).
         self.trigger_manager.admit_ready = self.admit_ready_events

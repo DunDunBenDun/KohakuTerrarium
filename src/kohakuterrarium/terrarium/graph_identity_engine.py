@@ -14,10 +14,13 @@ if TYPE_CHECKING:
 
 
 def bind_runtime_creature_id(creature: "Creature") -> None:
-    """Expose the final engine runtime ID to tool execution contexts."""
+    """Expose the final engine runtime ID to tool contexts and triggers."""
     executor = getattr(creature.agent, "executor", None)
     if executor is not None:
         executor._creature_id = creature.creature_id
+    trigger_manager = getattr(creature.agent, "trigger_manager", None)
+    if callable(getattr(trigger_manager, "set_host_creature_id", None)):
+        trigger_manager.set_host_creature_id(creature.creature_id)
 
 
 def guard_add_name(

@@ -746,6 +746,8 @@ def apply_creature_name(creature: "Creature", name: str) -> None:
     trigger_manager = getattr(agent, "trigger_manager", None)
     if trigger_manager is not None and hasattr(trigger_manager, "_agent_name"):
         trigger_manager._agent_name = name
+        if callable(getattr(trigger_manager, "bind_hosts", None)):
+            trigger_manager.bind_hosts()
     compact_manager = getattr(agent, "compact_manager", None)
     if compact_manager is not None and hasattr(compact_manager, "_agent_name"):
         compact_manager._agent_name = name
