@@ -55,7 +55,8 @@ def _validate_package(pkg_dir: Path, name: str) -> None:
         has_plugins = bool(manifest.get("plugins"))
         has_presets = bool(manifest.get("llm_presets"))
         has_backends = bool(manifest.get("llm_backends"))
-        if not (has_tools or has_plugins or has_presets or has_backends):
+        has_ui = bool(manifest.get("ui"))
+        if not (has_tools or has_plugins or has_presets or has_backends or has_ui):
             logger.warning(
                 "Package has no creatures/, terrariums/, or extension modules",
                 package=name,

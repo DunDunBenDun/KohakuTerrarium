@@ -97,6 +97,7 @@ def _package_record(
         "templates": manifest.get("templates", []),
         "drive_registrations": manifest.get("drive_registrations", []),
         "llm_backends": manifest.get("llm_backends", []),
+        "ui": manifest.get("ui") or {},
     }
 
 

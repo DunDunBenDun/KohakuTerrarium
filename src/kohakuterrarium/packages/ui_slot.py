@@ -1,0 +1,397 @@
+"""The ``ui:`` manifest slot: dashboard contributions declared by a package.
+
+Parses and validates each installed package's ``ui:`` block without
+importing any package code, and resolves served asset paths inside the
+package's UI root. A malformed block marks only that package invalid
+(``UISlot.error``); other packages are unaffected.
+
+Every contribution names an ``owner`` (``package:<pkg>``, ``plugin:<name>``,
+``tool:<name>``, ``trigger:<name>``); its mount kind fixes which owner kind
+is allowed (``MOUNT_OWNER_KINDS``), and a runtime owner must be a module the
+package's own manifest declares.
+"""
+
+import re
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+
+from kohakuterrarium.packages.locations import _packages_dir
+from kohakuterrarium.packages.walk import (
+    _manifest_mtime,
+    list_packages,
+    packages_fingerprint,
+)
+
+MOUNT_OWNER_KINDS: dict[str, tuple[str, ...]] = {
+    "settings": ("package",),
+    "tab": ("package",),
+    "rail": ("package",),
+    "panel": ("plugin",),
+    "tool-renderer": ("tool",),
+    "trigger-renderer": ("trigger",),
+}
+UI_KINDS: tuple[str, ...] = tuple(MOUNT_OWNER_KINDS)
+OWNER_KINDS: tuple[str, ...] = ("package", "plugin", "tool", "trigger")
+OWNER_MANIFEST_SLOTS: dict[str, str] = {
+    "plugin": "plugins",
+    "tool": "tools",
+    "trigger": "triggers",
+}
+ISOLATION_MODES: tuple[str, ...] = ("inline", "frame")
+DENSITIES: tuple[str, ...] = ("compact", "regular")
+DEFAULT_SDK_RANGE = ">=1,<2"
+DEFAULT_UI_ROOT = "ui"
+SCAN_WINDOW_SECONDS = 2.0
+
+_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_REF_RE = re.compile(r"^[A-Za-z_][\w.]*:[A-Za-z_]\w*$")
+_OWNER_NAME_RE = re.compile(r"^[A-Za-z0-9_][\w.\-]{0,127}$")
+_COMPARATOR_RE = re.compile(r"^(>=|<=|>|<|=|\^|~)?\d+(\.\d+){0,2}$")
+
+_lock = threading.Lock()
+_cache: dict[str, object] = {
+    "fingerprint": None,
+    "slots": [],
+    "checked_at": None,
+    "dir_mtime": None,
+}
+
+
+@dataclass(frozen=True)
+class UIContribution:
+    """One mount-point entry and the module that owns it."""
+
+    kind: str
+    id: str
+    label: str
+    owner: str
+    icon: str = ""
+    description: str = ""
+    order: int = 100
+    min_density: str = "compact"
+    isolation: str = "inline"
+
+    def to_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "id": self.id,
+            "label": self.label,
+            "owner": self.owner,
+            "icon": self.icon,
+            "description": self.description,
+            "order": self.order,
+            "minDensity": self.min_density,
+            "isolation": self.isolation,
+        }
+
+
+@dataclass(frozen=True)
+class UISlot:
+    """A package's validated ``ui:`` block; ``error`` is set when invalid.
+
+    ``fingerprint`` changes only when this package's own manifest or path
+    changes; ``declared`` holds the ``(kind, name)`` runtime modules its
+    manifest declares.
+    """
+
+    package: str
+    version: str
+    package_root: Path
+    ui_root: str = DEFAULT_UI_ROOT
+    sdk: str = DEFAULT_SDK_RANGE
+    entry: str = ""
+    styles: tuple[str, ...] = ()
+    api: str = ""
+    handler: str = ""
+    i18n: dict[str, str] = field(default_factory=dict)
+    contributions: tuple[UIContribution, ...] = ()
+    error: str = ""
+    fingerprint: tuple = ()
+    declared: frozenset = frozenset()
+
+    @property
+    def ui_dir(self) -> Path:
+        return (self.package_root / self.ui_root).resolve()
+
+    def to_dict(self) -> dict:
+        return {
+            "package": self.package,
+            "version": self.version,
+            "sdk": self.sdk,
+            "entry": self.entry,
+            "styles": list(self.styles),
+            "has_api": bool(self.api),
+            "has_handler": bool(self.handler),
+            "i18n": dict(self.i18n),
+            "contributes": [c.to_dict() for c in self.contributions],
+            "error": self.error,
+        }
+
+
+class _SlotError(ValueError):
+    """A ``ui:`` block violates the manifest schema."""
+
+
+def is_valid_sdk_range(text: str) -> bool:
+    """Check the comma-separated comparator grammar used by ``ui.sdk``."""
+    parts = [p.strip() for p in str(text).split(",")]
+    return bool(parts) and all(_COMPARATOR_RE.match(p) for p in parts)
+
+
+def _relative_inside(value: object, root: str, what: str) -> str:
+    """Return ``value`` as a POSIX path relative to ``root``; raise when outside."""
+    if not isinstance(value, str) or not value.strip():
+        raise _SlotError(f"{what} must be a non-empty path string")
+    path = PurePosixPath(value.strip().replace("\\", "/"))
+    if path.is_absolute() or ".." in path.parts:
+        raise _SlotError(f"{what} {value!r} must be a relative path without '..'")
+    root_parts = PurePosixPath(root).parts
+    if path.parts[: len(root_parts)] != root_parts or len(path.parts) <= len(
+        root_parts
+    ):
+        raise _SlotError(f"{what} {value!r} must live under the UI root {root!r}/")
+    return PurePosixPath(*path.parts[len(root_parts) :]).as_posix()
+
+
+def _declared_modules(record: dict) -> frozenset:
+    """``(kind, name)`` for every plugin / tool / trigger the manifest declares."""
+    out = set()
+    for kind, slot in OWNER_MANIFEST_SLOTS.items():
+        for entry in record.get(slot) or []:
+            name = entry.get("name") if isinstance(entry, dict) else entry
+            if isinstance(name, str) and name:
+                out.add((kind, name))
+    return frozenset(out)
+
+
+def _parse_owner(
+    raw: object, kind: str, package: str, where: str, declared: frozenset
+) -> str:
+    """Normalize a contribution's owner to ``<kind>:<name>`` and check it fits."""
+    allowed = MOUNT_OWNER_KINDS[kind]
+    if raw is None or raw == "package":
+        if "package" not in allowed:
+            raise _SlotError(
+                f"{where}.owner is required for a {kind} ({allowed[0]}:<name>)"
+            )
+        return f"package:{package}"
+    owner_kind, sep, name = str(raw).partition(":")
+    if not sep or owner_kind not in OWNER_KINDS or not _OWNER_NAME_RE.match(name):
+        raise _SlotError(f"{where}.owner {raw!r} must be '<kind>:<name>'")
+    if owner_kind not in allowed:
+        raise _SlotError(
+            f"{where}: a {kind} must be owned by {'/'.join(allowed)}, not {owner_kind}"
+        )
+    if owner_kind == "package" and name != package:
+        raise _SlotError(f"{where}.owner may not claim another package ({name!r})")
+    if owner_kind != "package" and (owner_kind, name) not in declared:
+        slot = OWNER_MANIFEST_SLOTS[owner_kind]
+        raise _SlotError(
+            f"{where}: the package does not declare {owner_kind} {name!r} "
+            f"in its {slot}: slot"
+        )
+    return f"{owner_kind}:{name}"
+
+
+def _parse_contribution(
+    raw: object, index: int, package: str, declared: frozenset
+) -> UIContribution:
+    where = f"contributes[{index}]"
+    if not isinstance(raw, dict):
+        raise _SlotError(f"{where} must be a mapping")
+    kind = raw.get("kind")
+    if kind not in UI_KINDS:
+        raise _SlotError(f"{where}.kind must be one of {list(UI_KINDS)}")
+    cid = raw.get("id")
+    if not isinstance(cid, str) or not _ID_RE.match(cid):
+        raise _SlotError(f"{where}.id must match {_ID_RE.pattern} (got {cid!r})")
+    isolation = raw.get("isolation", "inline")
+    if isolation not in ISOLATION_MODES:
+        raise _SlotError(f"{where}.isolation must be one of {list(ISOLATION_MODES)}")
+    density = raw.get("minDensity", raw.get("min_density", "compact"))
+    if density not in DENSITIES:
+        raise _SlotError(f"{where}.minDensity must be one of {list(DENSITIES)}")
+    order = raw.get("order", 100)
+    if not isinstance(order, int) or isinstance(order, bool):
+        raise _SlotError(f"{where}.order must be an integer")
+    return UIContribution(
+        kind=kind,
+        id=cid,
+        label=str(raw.get("label") or cid),
+        owner=_parse_owner(raw.get("owner"), kind, package, where, declared),
+        icon=str(raw.get("icon") or ""),
+        description=str(raw.get("description") or ""),
+        order=order,
+        min_density=density,
+        isolation=isolation,
+    )
+
+
+def _parse_ref(raw: dict, key: str) -> str:
+    value = raw.get(key) or ""
+    if value and (not isinstance(value, str) or not _REF_RE.match(value)):
+        raise _SlotError(f"{key} {value!r} must be 'dotted.module:attribute'")
+    return value
+
+
+def _parse_root(raw: dict, package_root: Path) -> str:
+    """The UI root, which must resolve inside the (resolved) package root."""
+    root = raw.get("root", DEFAULT_UI_ROOT)
+    if not isinstance(root, str) or not root.strip():
+        raise _SlotError("root must be a non-empty path string")
+    root_path = PurePosixPath(root.strip().replace("\\", "/"))
+    if root_path.is_absolute() or ".." in root_path.parts:
+        raise _SlotError(f"root {root!r} must be a relative path without '..'")
+    root = root_path.as_posix()
+    ui_dir = package_root / root
+    if not ui_dir.is_dir():
+        raise _SlotError(f"UI root {root!r}/ does not exist in the package")
+    if not ui_dir.resolve().is_relative_to(package_root.resolve()):
+        raise _SlotError(f"UI root {root!r}/ resolves outside the package")
+    return root
+
+
+def _parse_block(
+    raw: dict, package_root: Path, package: str, declared: frozenset
+) -> dict:
+    """Validate a ``ui:`` mapping and return ``UISlot`` keyword fields."""
+    root = _parse_root(raw, package_root)
+    sdk = str(raw.get("sdk", DEFAULT_SDK_RANGE))
+    if not is_valid_sdk_range(sdk):
+        raise _SlotError(f"sdk {sdk!r} is not a valid version range")
+
+    contributions = tuple(
+        _parse_contribution(item, i, package, declared)
+        for i, item in enumerate(raw.get("contributes") or [])
+    )
+    seen: set[str] = set()
+    for c in contributions:
+        if c.id in seen:
+            raise _SlotError(f"contribution id {c.id!r} is declared twice")
+        seen.add(c.id)
+
+    entry = ""
+    if raw.get("entry") is not None:
+        entry = _relative_inside(raw.get("entry"), root, "entry")
+    if not entry and any(c.isolation == "inline" for c in contributions):
+        raise _SlotError("entry is required when any contribution is inline")
+
+    styles_raw = raw.get("styles") or []
+    if not isinstance(styles_raw, list):
+        raise _SlotError("styles must be a list of paths")
+    styles = tuple(_relative_inside(s, root, "styles entry") for s in styles_raw)
+
+    i18n_raw = raw.get("i18n") or {}
+    if not isinstance(i18n_raw, dict):
+        raise _SlotError("i18n must map locale -> path")
+    i18n = {
+        str(locale): _relative_inside(path, root, f"i18n[{locale}]")
+        for locale, path in i18n_raw.items()
+    }
+    return {
+        "ui_root": root,
+        "sdk": sdk,
+        "entry": entry,
+        "styles": styles,
+        "api": _parse_ref(raw, "api"),
+        "handler": _parse_ref(raw, "handler"),
+        "i18n": i18n,
+        "contributions": contributions,
+    }
+
+
+def parse_ui_slot(record: dict) -> UISlot | None:
+    """Build a ``UISlot`` from a ``list_packages`` record; ``None`` without ``ui:``."""
+    raw = record.get("ui")
+    if raw is None or raw == {}:
+        return None
+    name = str(record.get("name", "?"))
+    version = str(record.get("version", "?"))
+    package_root = Path(record.get("path", ".")).resolve()
+    declared = _declared_modules(record)
+    base = {
+        "fingerprint": (str(package_root), version, _manifest_mtime(package_root)),
+        "declared": declared,
+    }
+    if not isinstance(raw, dict):
+        return UISlot(
+            name, version, package_root, error="ui: must be a mapping", **base
+        )
+    try:
+        fields = _parse_block(raw, package_root, name, declared)
+    except _SlotError as e:
+        return UISlot(name, version, package_root, error=str(e), **base)
+    return UISlot(name, version, package_root, **fields, **base)
+
+
+def _dir_mtime() -> int:
+    try:
+        return _packages_dir().stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+def invalidate_ui_cache() -> None:
+    """Force the next :func:`list_package_ui` to re-check installed packages."""
+    with _lock:
+        _cache["checked_at"] = None
+
+
+def list_package_ui() -> list[UISlot]:
+    """Every installed package's ``ui:`` slot.
+
+    Within ``SCAN_WINDOW_SECONDS`` of the last check the cached slots are
+    reused unless the packages directory itself changed (an install or
+    uninstall); after the window the package fingerprint is re-checked.
+    """
+    now = time.monotonic()
+    dir_mtime = _dir_mtime()
+    with _lock:
+        checked = _cache["checked_at"]
+        if (
+            checked is not None
+            and now - checked < SCAN_WINDOW_SECONDS
+            and _cache["dir_mtime"] == dir_mtime
+        ):
+            return list(_cache["slots"])
+    fingerprint = packages_fingerprint()
+    with _lock:
+        if _cache["fingerprint"] != fingerprint:
+            slots = [parse_ui_slot(record) for record in list_packages()]
+            _cache["slots"] = [s for s in slots if s is not None]
+            _cache["fingerprint"] = fingerprint
+        _cache["checked_at"] = now
+        _cache["dir_mtime"] = dir_mtime
+        return list(_cache["slots"])
+
+
+def get_package_ui(package: str) -> UISlot | None:
+    """The ``ui:`` slot of one installed package, or ``None``."""
+    for slot in list_package_ui():
+        if slot.package == package:
+            return slot
+    return None
+
+
+def packages_declaring(kind: str, name: str) -> list[UISlot]:
+    """UI slots of the packages whose manifest declares module ``kind:name``."""
+    return [s for s in list_package_ui() if (kind, name) in s.declared]
+
+
+def resolve_ui_asset(slot: UISlot, rel_path: str) -> Path | None:
+    """Map a served path to a file inside the slot's UI root, or ``None``."""
+    if slot.error or not rel_path:
+        return None
+    parts = PurePosixPath(rel_path.replace("\\", "/")).parts
+    if not parts or ".." in parts or parts[0] == "/":
+        return None
+    ui_dir = slot.ui_dir
+    package_root = slot.package_root.resolve()
+    candidate = (ui_dir / PurePosixPath(*parts)).resolve()
+    if not candidate.is_relative_to(ui_dir) or not candidate.is_relative_to(
+        package_root
+    ):
+        return None
+    return candidate if candidate.is_file() else None

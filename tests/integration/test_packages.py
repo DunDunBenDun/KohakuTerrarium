@@ -75,6 +75,11 @@ from kohakuterrarium.packages.slots import (
     resolve_package_skills,
     resolve_package_user_command,
 )
+from kohakuterrarium.packages.ui_slot import (
+    get_package_ui,
+    list_package_ui,
+    resolve_ui_asset,
+)
 from kohakuterrarium.packages.walk import get_package_modules, list_packages
 from kohakuterrarium.studio.catalog import drive_registrations as drive_catalog
 from kohakuterrarium.studio.catalog import packages as studio_packages
@@ -786,6 +791,75 @@ class TestPackagesIntegration:
         assert _load_manifest(nomanifest_dir) == {"name": "no_manifest_pkg"}
         uninstall_package("bare1")
         nomanifest_dir.rmdir()
+
+        # ---- ui: slot (dashboard contributions with owners) ----
+        # Install → listed with normalized owners → served path stays in
+        # the UI root → uninstall removes it from the listing.
+        ui_src = bundle_root / "uipkg"
+        (ui_src / "ui" / "parts").mkdir(parents=True)
+        (ui_src / "ui" / "index.js").write_text("export default () => {}\n")
+        (ui_src / "ui" / "parts" / "panel.js").write_text("export {}\n")
+        (ui_src / "private.py").write_text("SECRET = 1\n")
+        (ui_src / "kohaku.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "uipkg",
+                    "version": "0.2.0",
+                    "plugins": [{"name": "qq", "module": "uipkg_ui", "class": "P"}],
+                    "tools": [{"name": "qq_send", "module": "uipkg_ui", "class": "T"}],
+                    "ui": {
+                        "entry": "ui/index.js",
+                        "handler": "uipkg_ui:Handler",
+                        "contributes": [
+                            {"kind": "settings", "id": "login", "label": "Login"},
+                            {"kind": "panel", "id": "feed", "owner": "plugin:qq"},
+                            {
+                                "kind": "tool-renderer",
+                                "id": "s",
+                                "owner": "tool:qq_send",
+                            },
+                        ],
+                    },
+                }
+            )
+        )
+        bad_src = bundle_root / "uibad"
+        (bad_src / "ui").mkdir(parents=True)
+        (bad_src / "kohaku.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "uibad",
+                    "ui": {
+                        "entry": "ui/x.js",
+                        "contributes": [
+                            {"kind": "panel", "id": "p", "owner": "package"}
+                        ],
+                    },
+                }
+            )
+        )
+        assert install_package(str(ui_src)) == "uipkg"
+        assert install_package(str(bad_src)) == "uibad"
+        ui_slots = {s.package: s for s in list_package_ui()}
+        assert ui_slots["uibad"].error and not ui_slots["uibad"].contributions
+        ui_slot = ui_slots["uipkg"]
+        assert ui_slot.error == "" and ui_slot.handler == "uipkg_ui:Handler"
+        assert [(c.kind, c.owner) for c in ui_slot.contributions] == [
+            ("settings", "package:uipkg"),
+            ("panel", "plugin:qq"),
+            ("tool-renderer", "tool:qq_send"),
+        ]
+        assert (
+            resolve_ui_asset(ui_slot, "parts/panel.js")
+            == (get_package_root("uipkg") / "ui" / "parts" / "panel.js").resolve()
+        )
+        assert resolve_ui_asset(ui_slot, "../private.py") is None
+        assert [p["ui"]["entry"] for p in list_packages() if p["name"] == "uipkg"] == [
+            "ui/index.js"
+        ]
+        uninstall_package("uipkg")
+        uninstall_package("uibad")
+        assert get_package_ui("uipkg") is None and list_package_ui() == []
 
         # ---- kt uninstall alpha ----
         assert studio_packages.uninstall_package_op("alpha") is True
