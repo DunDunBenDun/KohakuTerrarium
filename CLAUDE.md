@@ -141,9 +141,14 @@ different size. `tests/README.md` is the full spec; the summary:
 
 Tier discipline: **behavior asserts, not shape asserts** (every mutation
 test observes the side effect); **real collaborators, not mocks** (the
-only seam is the LLM: `kohakuterrarium.testing.llm.ScriptedLLM`,
-monkeypatched at BOTH `bootstrap.llm.create_llm_provider` and
-`bootstrap.agent_init.create_llm_provider`); **to raise integration/e2e
+only seam is the LLM: `kohakuterrarium.testing.llm.ScriptedLLM`, wired by
+`kohakuterrarium.testing.llm_seam`. `tests/conftest.py` applies it to every
+test: all provider factories in `LLM_FACTORY_TARGETS` return `ScriptedLLM`,
+constructing a real provider raises, non-loopback network is blocked, and
+HOME / CODEX_HOME / KT_CONFIG_DIR are tmp. Inject `llm=` where you can;
+tests that build provider classes against fake transports opt out with
+`@pytest.mark.real_llm_provider` or a scoped `with real_llm_providers():`);
+**to raise integration/e2e
 coverage, fatten the existing workflow functions; do NOT add more test
 functions.** Carve-out files (3rd-party providers, platform PTY,
 end-user CLI/UI, the pywebview boot path) are listed in
