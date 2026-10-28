@@ -37,6 +37,8 @@
           <div class="mx-2 mt-1 border-t border-warm-200 dark:border-warm-700" />
 
           <RailGroupAttached />
+
+          <component :is="group.component" v-for="group in extraRailGroups" :key="group.id" :data-rail-group="group.id" />
         </template>
       </div>
 
@@ -84,6 +86,7 @@ import { useAuthStore } from "@/stores/auth"
 import { useThemeStore } from "@/stores/theme"
 import { useLocaleStore } from "@/stores/locale"
 import { usePaletteStore } from "@/stores/palette"
+import { railGroups } from "@/stores/tabKindRegistry"
 import { useTabsStore } from "@/stores/tabs"
 import { useI18n } from "@/utils/i18n"
 
@@ -104,6 +107,8 @@ const isCollapsed = computed(() => props.collapsible && collapsed.value)
 const inStudio = computed(() => props.collapsible && appMode.value === "studio")
 const popoverOpen = ref(false)
 const newOpen = ref(false)
+// Registered rail groups (package UI extensions), below the built-in groups.
+const extraRailGroups = computed(() => [...railGroups.entries()].map(([id, g]) => ({ id, ...g })).sort((a, b) => a.order - b.order))
 const STRIP = [
   { id: "lab", label: "lab.rail.lab", icon: "i-carbon-home", app: "terrarium", tab: { id: "dashboard" } },
   { id: "history", label: "lab.history.title", icon: "i-carbon-recently-viewed", tab: { kind: "saved-sessions", id: "saved-sessions" } },

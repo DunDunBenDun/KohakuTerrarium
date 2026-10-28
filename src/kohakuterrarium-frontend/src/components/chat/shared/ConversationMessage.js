@@ -2,6 +2,8 @@ import { computed, defineComponent, h, reactive, ref } from "vue"
 
 import "./conversation-message.css"
 
+import { triggerRenderers } from "../../../ext/renderers.js"
+
 import { MediaImage } from "../../../public/chat/MediaPreview.js"
 import { computeRenderGroups } from "../../../public/chat/chatToolGrouping.js"
 import ToolCallBatch from "../ToolCallBatch.vue"
@@ -309,9 +311,17 @@ export default defineComponent({
           message.preview ? renderedText(props.renderText, message.preview) : null,
         ])
       } else if (role === "trigger") {
+        const renderer =
+          (message.triggerName && triggerRenderers.get(message.triggerName)) ||
+          (message.triggerUiName && triggerRenderers.get(message.triggerUiName)) ||
+          null
         content = h("section", { class: "kt-conversation-banner is-compact" }, [
           h("strong", `Triggered by ${message.content || "event"}`),
-          message.triggerContent ? renderedText(props.renderText, message.triggerContent) : null,
+          renderer
+            ? h(renderer.component, { event: message })
+            : message.triggerContent
+              ? renderedText(props.renderText, message.triggerContent)
+              : null,
         ])
       } else if (role === "bg_result") {
         content = h("div", { class: "kt-conversation-divider" }, [

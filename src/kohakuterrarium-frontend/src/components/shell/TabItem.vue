@@ -15,6 +15,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 
 import TabContextMenu from "@/components/shell/TabContextMenu.vue"
 import { useSplitDrag } from "@/composables/useSplitDrag"
+import { extensionTabMeta } from "@/ext/registry"
 import { attentionForScope, subscribeAttention } from "@/stores/attention"
 import { useAttentionPrefs } from "@/stores/attentionPrefs"
 import { useTabsStore } from "@/stores/tabs"
@@ -116,7 +117,9 @@ const iconClass = computed(
       settings: "i-carbon-settings",
       "code-editor": "i-carbon-code",
       graph: "i-carbon-network-3",
-    })[props.tab.kind] ?? "i-carbon-circle",
+    })[props.tab.kind] ??
+    extensionTabMeta(props.tab.kind)?.icon ??
+    "i-carbon-circle",
 )
 
 const label = computed(() => {
@@ -151,7 +154,7 @@ const label = computed(() => {
     case "graph":
       return tab.config_name ? `${tab.config_name} · ${t("graph.tab.suffix")}` : t("graph.tab.title")
     default:
-      return tab.kind
+      return extensionTabMeta(tab.kind)?.label ?? tab.label ?? tab.kind
   }
 })
 </script>

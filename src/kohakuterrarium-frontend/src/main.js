@@ -4,6 +4,8 @@ import { createRouter, createWebHistory } from "vue-router"
 import { routes } from "vue-router/auto-routes"
 import App from "./App.vue"
 
+import { startUiExtensions } from "@/ext/loader"
+import { installSharedModules } from "@/ext/shared"
 import { initializeAttentionPrefs } from "@/stores/attentionPrefs"
 import { registerBuiltinPanels } from "@/stores/layoutPanels"
 import { ensureUIPrefsLoaded } from "@/utils/uiPrefs"
@@ -56,8 +58,10 @@ async function bootstrap() {
   app.use(router)
 
   registerBuiltinPanels()
+  installSharedModules()
 
   app.mount("#app")
+  startUiExtensions()
 }
 
 bootstrap()
