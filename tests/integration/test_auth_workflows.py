@@ -115,7 +115,7 @@ class TestAuthIntegration:
             #     invite_only — no self-register without a token; the
             #     operator's CLI path is ``kt admin users add``) ─────
             with connection() as conn:
-                create_user(
+                operator = create_user(
                     conn,
                     "operator",
                     "ops-pw",
@@ -136,6 +136,10 @@ class TestAuthIntegration:
             r = client.get("/api/auth/me", headers=host_bearer)
             assert r.status_code == 200
             assert r.json()["username"] == "operator"
+
+            # ── 7b. The admin's engine may use host-wide resources ───
+            client.get("/api/nodes", headers=host_bearer)
+            assert app.state.engine_pool.peek(operator.id).host_resources is True
 
             # ── 8. Config-mutation without admin token → L3 rejects ──
             # ``/api/settings/keys`` is one of the L3-gated routes
@@ -216,6 +220,11 @@ class TestAuthIntegration:
 
             live = set(app.state.engine_pool.live_user_ids())
             assert None not in live
+
+            # ── 13b. A non-admin user's engine gets no host resources ─
+            alice_id = r.json()["id"]
+            client2.get("/api/nodes", headers=new_bearer)
+            assert app.state.engine_pool.peek(alice_id).host_resources is False
 
             # ── 14. Logout drops the session ─────────────────────────
             client2.post("/api/auth/logout", headers=new_bearer)

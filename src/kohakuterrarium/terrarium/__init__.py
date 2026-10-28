@@ -28,6 +28,7 @@ _EXPORTS = {
     "TopologyDelta": "kohakuterrarium.terrarium.topology",
     "TopologyState": "kohakuterrarium.terrarium.topology",
     "build_creature": "kohakuterrarium.terrarium.creature_host",
+    "host_resources_allowed": "kohakuterrarium.terrarium.host_resources",
     "load_terrarium_config": "kohakuterrarium.terrarium.config",
 }
 

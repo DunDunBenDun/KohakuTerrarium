@@ -91,6 +91,7 @@ class Terrarium:
         drive_config: Any = None,
         drive_registrations: "tuple[Any, ...] | list[Any] | None" = None,
         drive_store: Any = None,
+        host_resources: bool = True,
     ) -> None:
         """Create an engine.
 
@@ -108,6 +109,7 @@ class Terrarium:
         """
         self._pwd = pwd
         self._session_dir = session_dir
+        self._host_resources = bool(host_resources)
         # Built by default; an explicitly disabled config opts out.
         self._drive_runtime = _drive_runtime.build_drive_runtime(
             self, drive_config, drive_registrations, drive_store
@@ -249,6 +251,19 @@ class Terrarium:
         was constructed without ``drive_config`` — no manager exists.
         """
         return self._drive_runtime
+
+    @property
+    def host_resources(self) -> bool:
+        """Whether creatures here may use host-wide resources.
+
+        An opaque flag set by whoever builds the engine; creature code reads
+        it through :func:`kohakuterrarium.terrarium.host_resources_allowed`.
+        """
+        return self._host_resources
+
+    def set_host_resources(self, allowed: bool) -> None:
+        """Change the host-resources flag for every creature in this engine."""
+        self._host_resources = bool(allowed)
 
     def reconfigure_drives(self, drive_registrations) -> str:
         """Apply a Drive registry change; returns ``applied_live`` /

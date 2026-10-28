@@ -20,7 +20,7 @@ from kohakuterrarium.api.auth import router as auth_router
 from kohakuterrarium.api.auth.asset_token import new_asset_secret
 from kohakuterrarium.api.boot_restore import auto_resume_enabled, restore_on_boot
 from kohakuterrarium.api.auth.db import ensure_migrated as ensure_auth_migrated
-from kohakuterrarium.api.auth.engine_pool import EnginePool
+from kohakuterrarium.api.auth.engine_pool import EnginePool, user_is_admin
 from kohakuterrarium.api.auth.middleware import HostTokenMiddleware
 from kohakuterrarium.api.deps import _session_dir, get_engine, set_service
 from kohakuterrarium.api.ext import owner_routes as ext_owner_routes
@@ -526,6 +526,7 @@ def create_app(
     app.state.engine_pool = EnginePool(
         max_active=10,
         drive_resolver=_drive_settings.resolve_drive_kwargs,
+        admin_resolver=user_is_admin,
     )
 
     app.add_middleware(

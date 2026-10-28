@@ -104,7 +104,9 @@ def get_service(
                 headers={"X-Auth-Required": "user"},
             )
         user_id = user.id if user is not None else None
-        engine = pool.get_or_create(user_id)
+        engine = pool.get_or_create(
+            user_id, is_admin=user is not None and user.role == "admin"
+        )
         service = LocalTerrariumService(engine)
         # Session metadata lookup must bind to the same service instance as the engine.
         service.set_runtime_graph_meta_lookup(partial(get_session_meta, service))
