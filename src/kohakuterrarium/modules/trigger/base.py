@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from kohakuterrarium.core.events import TriggerEvent
+from kohakuterrarium.modules.ui_owner import UIOwnerMixin
 
 
 @runtime_checkable
@@ -27,12 +28,14 @@ class TriggerModule(Protocol):
         ...
 
 
-class BaseTrigger(ABC):
+class BaseTrigger(UIOwnerMixin, ABC):
     """Provide trigger lifecycle, context, setup metadata, and event creation."""
 
     resumable: bool = False
     # Universal triggers may be installed at runtime through a generated tool.
     universal: ClassVar[bool] = False
+    # Stable name UI contributions use for this trigger (``trigger:<ui_name>``).
+    ui_name: ClassVar[str] = ""
 
     setup_tool_name: ClassVar[str] = ""
     # The adapter marks setup descriptions as long-lived trigger side effects.

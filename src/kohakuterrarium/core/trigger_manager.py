@@ -178,6 +178,10 @@ class TriggerManager:
         """Get the raw trigger instance."""
         return self._triggers.get(trigger_id)
 
+    def iter_triggers(self) -> tuple[BaseTrigger, ...]:
+        """Every registered trigger instance, in registration order."""
+        return tuple(self._triggers.values())
+
     async def start_all(self) -> None:
         """Start every registered trigger that lacks a run-loop task."""
         for trigger_id, trigger in self._triggers.items():

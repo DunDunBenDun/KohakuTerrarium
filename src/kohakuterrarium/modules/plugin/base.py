@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+from kohakuterrarium.modules.ui_owner import UIOwnerMixin
 from kohakuterrarium.modules.plugin.option_validation import (
     validate_plugin_options,
 )
@@ -221,7 +222,7 @@ class PluginContext:
         return helper(self, config_path_or_dict, role)
 
 
-class BasePlugin:
+class BasePlugin(UIOwnerMixin):
     """Provide no-op hooks, declarative gating, and runtime option handling."""
 
     name: str = "unnamed"

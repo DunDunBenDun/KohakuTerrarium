@@ -350,6 +350,9 @@ class Agent(
                 detail,
                 metadata={
                     "trigger_id": trigger_id,
+                    "ui_name": getattr(
+                        self.trigger_manager.get_trigger(trigger_id), "ui_name", ""
+                    ),
                     "event_type": event.type,
                     "channel": channel,
                     "sender": sender,

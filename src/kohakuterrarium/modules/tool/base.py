@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from kohakuterrarium.builtin_skills import get_builtin_tool_doc
+from kohakuterrarium.modules.ui_owner import UIOwnerMixin
 from kohakuterrarium.modules.tool.media_policy import MediaPolicy
 from kohakuterrarium.modules.tool.request_replay import RequestReplay
 from kohakuterrarium.modules.tool.runtime_options import validate_tool_options
@@ -154,7 +155,7 @@ class Tool(Protocol):
         ...
 
 
-class BaseTool:
+class BaseTool(UIOwnerMixin):
     """Provide common configuration, error handling, and documentation lookup."""
 
     needs_context: bool = False

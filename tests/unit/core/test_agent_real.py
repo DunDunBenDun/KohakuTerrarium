@@ -3280,6 +3280,38 @@ class TestWireTriggerNotifications:
         finally:
             await agent.stop()
 
+    async def test_trigger_fired_metadata_carries_the_trigger_ui_name(
+        self, make_agent, monkeypatch
+    ):
+        from kohakuterrarium.core.events import TriggerEvent
+        from kohakuterrarium.modules.trigger.base import BaseTrigger
+
+        class FeedTrigger(BaseTrigger):
+            ui_name = "qq_feed"
+
+            async def wait_for_trigger(self):
+                return None
+
+        agent = make_agent()
+        await agent.start()
+        try:
+            seen = []
+            monkeypatch.setattr(
+                agent.output_router,
+                "notify_activity",
+                lambda kind, detail, metadata=None: seen.append(metadata),
+            )
+            await agent.trigger_manager.add(
+                FeedTrigger(), trigger_id="trigger_9f1", autostart=False
+            )
+            evt = TriggerEvent(type="feed", content="x", context={})
+            agent.trigger_manager.on_trigger_fired("trigger_9f1", evt)
+            agent.trigger_manager.on_trigger_fired("trigger_gone", evt)
+            assert [m["ui_name"] for m in seen] == ["qq_feed", ""]
+            assert seen[0]["trigger_id"] == "trigger_9f1"
+        finally:
+            await agent.stop()
+
 
 # ── _on_sa_tool_activity wiring ─────────────────────────────────
 
