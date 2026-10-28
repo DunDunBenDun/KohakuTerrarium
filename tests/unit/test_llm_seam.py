@@ -47,7 +47,8 @@ class TestLeakRepro:
 
     def test_codex_cli_token_path_follows_home(self, tmp_path, monkeypatch):
         monkeypatch.delenv("CODEX_HOME", raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path))
+        for name in ("HOME", "USERPROFILE"):
+            monkeypatch.setenv(name, str(tmp_path))
         assert codex_auth.codex_cli_token_path() == tmp_path / ".codex" / "auth.json"
         monkeypatch.setenv("CODEX_HOME", str(tmp_path / "ch"))
         assert codex_auth.codex_cli_token_path() == tmp_path / "ch" / "auth.json"
