@@ -5,6 +5,9 @@ the read-side helpers there are the single source of truth shared
 with the studio catalog routes.
 """
 
+from pathlib import Path
+
+from kohakuterrarium.cli.extension_scaffold import scaffold_package, sdk_testing_dir
 from kohakuterrarium.studio.catalog.builtins import (
     extension_module_types,
     get_extension_modules,
@@ -85,4 +88,20 @@ def extension_info_cli(name: str) -> int:
                 print(f"  - {mod}")
         print()
 
+    return 0
+
+
+def extension_new_cli(name: str, *, ui: bool = False, directory: str = ".") -> int:
+    """Scaffold a new package directory (``--ui`` adds dashboard UI)."""
+    try:
+        written = scaffold_package(name, Path(directory), ui=ui)
+    except (ValueError, FileExistsError) as e:
+        print(f"Error: {e}")
+        return 1
+    root = Path(directory) / name
+    print(f"Created {root} ({len(written)} files)")
+    if ui and not sdk_testing_dir().is_dir():
+        print("Note: the SDK test double was not found (frontend not built);")
+        print("      ui/test/kt-sdk/ is empty.")
+    print(f"Next: kt install {root} -e  &&  kt serve")
     return 0

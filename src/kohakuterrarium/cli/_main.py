@@ -22,7 +22,11 @@ from kohakuterrarium.cli.auth import login_cli
 from kohakuterrarium.cli.config import add_config_subparser, config_cli
 from kohakuterrarium.cli.doctor import add_doctor_subparser, dispatch_doctor
 from kohakuterrarium.cli.drive import add_drive_subparser, drive_cli
-from kohakuterrarium.cli.extension import extension_info_cli, extension_list_cli
+from kohakuterrarium.cli.extension import (
+    extension_info_cli,
+    extension_list_cli,
+    extension_new_cli,
+)
 from kohakuterrarium.cli.identity_mcp import list_for_agent_cli as mcp_list_cli
 from kohakuterrarium.cli.lab_client import add_lab_client_subparser, lab_client_cli
 from kohakuterrarium.cli.marketplace import marketplace_cli
@@ -372,6 +376,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "info", help="Show details of a specific package"
     )
     ext_info_parser.add_argument("name", help="Package name")
+    ext_new_parser = ext_sub.add_parser("new", help="Scaffold a new package")
+    ext_new_parser.add_argument("name", help="Package name")
+    ext_new_parser.add_argument(
+        "--ui", action="store_true", help="Include dashboard UI (settings + panel)"
+    )
+    ext_new_parser.add_argument("--dir", default=".", help="Parent directory")
 
     # Marketplace browsing and installation share the same configured sources.
     mp_parser = subparsers.add_parser(
@@ -558,6 +568,8 @@ def _dispatch_extension(args: argparse.Namespace) -> int:
         return extension_list_cli()
     elif sub == "info":
         return extension_info_cli(args.name)
+    elif sub == "new":
+        return extension_new_cli(args.name, ui=args.ui, directory=args.dir)
     else:
         parser = _build_parser()
         parser.parse_args(["extension", "--help"])
