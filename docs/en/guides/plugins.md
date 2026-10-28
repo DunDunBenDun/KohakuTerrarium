@@ -115,6 +115,43 @@ leave the legacy record unchanged; an explicitly saved `None` also overrides
 the fallback. Legacy records do not identify their original owner, so values
 already overwritten by another creature cannot be recovered automatically.
 
+### Pinned context
+
+`context.pin_message(key, role, content)` places a message right after the
+system prompt in every model request. `role` is `"user"` or `"system"`;
+`content` is a string or a list of content parts, so a pin can carry images.
+Pinning an existing key replaces that pin in place; `context.unpin_message(key)`
+removes it.
+
+Pins are kept outside the conversation history:
+
+- compaction never summarizes or drops them; after a compaction the request
+  is system prompt, pins, summary, recent turns;
+- edit, regenerate, rewind, branch switching and `/clear` keep them, and
+  message indices used by those operations do not count them;
+- they are saved in session state and restored on resume and in forked
+  sessions, once;
+- forked sub-agents and side conversations inherit them as part of the
+  parent's context.
+
+Pins are sent on every request, so keep them small; with provider prompt
+caching their fixed position keeps the cached prefix stable.
+
+```python
+class Persona(BasePlugin):
+    name = "persona"
+
+    async def on_load(self, context: PluginContext) -> None:
+        self.ctx = context
+
+    async def on_agent_start(self) -> None:
+        self.ctx.pin_message(
+            "persona",
+            "user",
+            [TextPart(text="This is your appearance."), ImagePart(url=data_url)],
+        )
+```
+
 ## Example: tool guard
 
 Blocks dangerous shell commands.
