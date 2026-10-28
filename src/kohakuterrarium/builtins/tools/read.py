@@ -33,6 +33,7 @@ class ReadTool(BaseTool):
     """Read files with line ranges and multimodal handling where supported."""
 
     needs_context = True
+    path_arguments = {"path": "read"}
     media_policy = MediaPolicy(persist=True, pinned=False, inline_fallback=True)
 
     @property

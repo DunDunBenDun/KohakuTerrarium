@@ -28,6 +28,7 @@ class GrepTool(BaseTool):
     """Search text files with a regular expression and optional glob filter."""
 
     needs_context = True
+    path_arguments = {"path": "read"}
 
     @property
     def tool_name(self) -> str:

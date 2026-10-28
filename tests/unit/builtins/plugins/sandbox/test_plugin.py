@@ -1,11 +1,23 @@
-"""Sandbox glob policy checks the same roots as the tool."""
+"""Sandbox file policy: glob roots and declared tool path arguments."""
+
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from kohakuterrarium.builtins.plugins.sandbox.plugin import SandboxPlugin
+from kohakuterrarium.builtins.tools.edit import EditTool
 from kohakuterrarium.builtins.tools.glob import GlobTool
-from kohakuterrarium.modules.plugin.base import PluginBlockError
-from kohakuterrarium.modules.tool.base import ToolContext
+from kohakuterrarium.builtins.tools.grep import GrepTool
+from kohakuterrarium.builtins.tools.multi_edit import MultiEditTool
+from kohakuterrarium.builtins.tools.notebook_edit import NotebookEditTool
+from kohakuterrarium.builtins.tools.notebook_read import NotebookReadTool
+from kohakuterrarium.builtins.tools.read import ReadTool
+from kohakuterrarium.builtins.tools.tree import TreeTool
+from kohakuterrarium.builtins.tools.write import WriteTool
+from kohakuterrarium.core.registry import Registry
+from kohakuterrarium.modules.plugin.base import PluginBlockError, PluginContext
+from kohakuterrarium.modules.tool.base import BaseTool, ToolContext, ToolResult
 
 
 @pytest.fixture
@@ -125,3 +137,129 @@ async def test_base_symlink_target_is_checked(paths):
         await SandboxPlugin(fs_read="workspace").pre_tool_execute(
             {"path": str(link), "pattern": "*.txt"}, tool_name="glob", context=context
         )
+
+
+class _UploadTool(BaseTool):
+    """Package-style tool that reads ``media`` and writes ``save_to``."""
+
+    path_arguments = {"media": "read", "save_to": "write"}
+
+    @property
+    def tool_name(self):
+        return "pkg_upload"
+
+    @property
+    def description(self):
+        return "upload"
+
+    async def _execute(self, args, **kwargs):
+        return ToolResult(output="sent")
+
+
+class _UndeclaredTool(_UploadTool):
+    path_arguments = {}
+
+    @property
+    def tool_name(self):
+        return "pkg_plain"
+
+
+class TestDeclaredPathArguments:
+    """Declared ``path_arguments`` are checked for any tool, not only built-ins."""
+
+    async def test_denied_config_dir_is_blocked(self, paths):
+        _, _, context = paths
+        target = Path("~/.kohakuterrarium/credentials.json").expanduser()
+        with pytest.raises(PluginBlockError, match="path is denied"):
+            await SandboxPlugin(fs_read="broad").pre_tool_execute(
+                {"media": str(target)},
+                tool_name="pkg_upload",
+                tool=_UploadTool(),
+                context=context,
+            )
+
+    async def test_parent_traversal_leaves_the_workspace(self, paths):
+        _, _, context = paths
+        with pytest.raises(PluginBlockError, match="outside working directory"):
+            await SandboxPlugin(fs_read="workspace").pre_tool_execute(
+                {"media": "../outside/outside.txt"},
+                tool_name="pkg_upload",
+                tool=_UploadTool(),
+                context=context,
+            )
+
+    async def test_list_values_are_each_checked(self, paths):
+        _, outside, context = paths
+        with pytest.raises(PluginBlockError, match="outside working directory"):
+            await SandboxPlugin(fs_read="workspace").pre_tool_execute(
+                {"media": ["inside.txt", str(outside / "outside.txt")]},
+                tool_name="pkg_upload",
+                tool=_UploadTool(),
+                context=context,
+            )
+
+    async def test_write_argument_uses_the_write_axis(self, paths):
+        _, _, context = paths
+        with pytest.raises(PluginBlockError, match="fs_write=deny"):
+            await SandboxPlugin(fs_write="deny").pre_tool_execute(
+                {"save_to": "out.bin"},
+                tool_name="pkg_upload",
+                tool=_UploadTool(),
+                context=context,
+            )
+
+    async def test_allowed_path_passes(self, paths):
+        _, _, context = paths
+        result = await SandboxPlugin(fs_read="workspace").pre_tool_execute(
+            {"media": "inside.txt"},
+            tool_name="pkg_upload",
+            tool=_UploadTool(),
+            context=context,
+        )
+        assert result is None
+
+    async def test_tool_without_declarations_is_unaffected(self, paths):
+        _, outside, context = paths
+        result = await SandboxPlugin(fs_read="deny").pre_tool_execute(
+            {"media": str(outside / "outside.txt")},
+            tool_name="pkg_plain",
+            tool=_UndeclaredTool(),
+            context=context,
+        )
+        assert result is None
+
+    async def test_registry_lookup_when_no_tool_is_passed(self, paths):
+        _, outside, context = paths
+        plugin = SandboxPlugin(fs_read="workspace")
+        registry = Registry()
+        registry.register_tool(_UploadTool())
+        await plugin.on_load(
+            PluginContext(
+                agent_name="a",
+                working_dir=context.working_dir,
+                _host_agent=SimpleNamespace(registry=registry),
+            )
+        )
+        with pytest.raises(PluginBlockError, match="outside working directory"):
+            await plugin.pre_tool_execute(
+                {"media": str(outside / "outside.txt")},
+                tool_name="pkg_upload",
+                context=context,
+            )
+
+
+@pytest.mark.parametrize(
+    "tool_cls",
+    [
+        ReadTool,
+        WriteTool,
+        EditTool,
+        MultiEditTool,
+        GrepTool,
+        TreeTool,
+        NotebookReadTool,
+        NotebookEditTool,
+    ],
+)
+def test_builtin_file_tools_declare_their_path_argument(tool_cls):
+    assert "path" in tool_cls.path_arguments

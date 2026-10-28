@@ -130,6 +130,7 @@ class MultiEditTool(BaseTool):
     """Apply multiple ordered search/replace edits to a single file."""
 
     needs_context = True
+    path_arguments = {"path": "write"}
     # Serial execution prevents concurrent writers from invalidating ordered edits.
     is_concurrency_safe = False
 

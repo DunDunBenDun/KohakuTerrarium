@@ -737,7 +737,9 @@ class SubAgent:
                 )
                 # Per-call wrapping prevents child hooks from leaking onto shared tools.
                 exec_fn = (
-                    self._fork_policy.wrap(tool.execute, tool_name=tool_call.name)
+                    self._fork_policy.wrap(
+                        tool.execute, tool_name=tool_call.name, tool=tool
+                    )
                     if self._fork_policy is not None
                     else tool.execute
                 )
@@ -747,7 +749,7 @@ class SubAgent:
                         "post_tool_execute",
                         exec_fn,
                         input_kwarg="args",
-                        extra_kwargs={"tool_name": tool_call.name},
+                        extra_kwargs={"tool_name": tool_call.name, "tool": tool},
                     )
                 try:
                     result = await exec_fn(tool_call.args, context=context)

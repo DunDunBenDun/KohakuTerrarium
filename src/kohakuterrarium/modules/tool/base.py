@@ -5,7 +5,7 @@ from abc import abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from kohakuterrarium.builtin_skills import get_builtin_tool_doc
 from kohakuterrarium.modules.ui_owner import UIOwnerMixin
@@ -192,6 +192,10 @@ class BaseTool(UIOwnerMixin):
 
     # Buckets order prompt contributions; names remain alphabetical within each bucket.
     prompt_contribution_bucket: str = "normal"
+
+    # Argument name -> "read" | "write" for arguments holding file paths; the
+    # sandbox plugin checks each declared value (a path or a list of paths).
+    path_arguments: ClassVar[dict[str, str]] = {}
 
     def __init__(self, config: ToolConfig | None = None):
         self.config = config or ToolConfig()

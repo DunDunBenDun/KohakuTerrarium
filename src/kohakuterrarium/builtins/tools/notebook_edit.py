@@ -252,6 +252,7 @@ class NotebookEditTool(BaseTool):
     """Apply one or more ordered cell edits to a Jupyter notebook."""
 
     needs_context = True
+    path_arguments = {"path": "write"}
     # Ordered cell references depend on a stable notebook snapshot.
     is_concurrency_safe = False
 

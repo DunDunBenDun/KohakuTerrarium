@@ -1,7 +1,8 @@
 """Enforce runtime-configurable file, network, tool, and subprocess policy.
 
-The sandbox remains a plugin: hooks gate known tools, while a runtime service
-provides the same policy boundary to subprocess-capable tools.
+The sandbox remains a plugin: hooks gate known tools and any tool's declared
+``path_arguments``, while a runtime service provides the same policy boundary
+to subprocess-capable tools.
 """
 
 import asyncio
@@ -172,10 +173,21 @@ class SandboxPlugin(BasePlugin):
         cwd = _context_cwd(context, self._context)
         if tool_name == "glob":
             self._check_glob(args, context, cwd)
-        for path in _iter_tool_paths(tool_name, args, cwd):
+        declared = _declared_path_arguments(
+            kwargs.get("tool") or self._lookup_tool(tool_name)
+        )
+        for path in _iter_tool_paths(tool_name, args, cwd, declared):
             self._check_path(tool_name, path.path, path.operation, cwd)
         self._check_network_tool(tool_name, args)
         return None
+
+    def _lookup_tool(self, tool_name: str) -> Any:
+        """Find the host agent's tool by name when the hook got no instance."""
+        agent = self._context.host_agent if self._context is not None else None
+        registry = getattr(agent, "registry", None)
+        if registry is None or not tool_name:
+            return None
+        return registry.get_tool(tool_name)
 
     def runtime_services(self, context: Any) -> dict[str, Any]:
         """Expose the optional subprocess runner service while enabled."""
@@ -322,14 +334,28 @@ def _context_cwd(context: Any, plugin_context: PluginContext | None) -> Path:
     return Path.cwd().resolve()
 
 
+def _declared_path_arguments(tool: Any) -> dict[str, str]:
+    declared = getattr(tool, "path_arguments", None)
+    if not isinstance(declared, dict):
+        return {}
+    return {
+        str(name): "write" if operation == "write" else "read"
+        for name, operation in declared.items()
+    }
+
+
 def _iter_tool_paths(
-    tool_name: str, args: dict[str, Any], cwd: Path
+    tool_name: str,
+    args: dict[str, Any],
+    cwd: Path,
+    declared: dict[str, str] | None = None,
 ) -> list[_ToolPath]:
+    checks = {(arg, "read") for arg in READ_PATH_ARGS.get(tool_name, [])}
+    checks |= {(arg, "write") for arg in WRITE_PATH_ARGS.get(tool_name, [])}
+    checks |= {(arg, op) for arg, op in (declared or {}).items()}
     paths: list[_ToolPath] = []
-    for arg_name in READ_PATH_ARGS.get(tool_name, []):
-        paths.extend(_paths_from_value(args.get(arg_name), "read", cwd))
-    for arg_name in WRITE_PATH_ARGS.get(tool_name, []):
-        paths.extend(_paths_from_value(args.get(arg_name), "write", cwd))
+    for arg_name, operation in sorted(checks):
+        paths.extend(_paths_from_value(args.get(arg_name), operation, cwd))
     return paths
 
 

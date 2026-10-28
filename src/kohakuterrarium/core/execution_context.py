@@ -88,6 +88,7 @@ class ExecutorContextMixin:
             input_kwarg="args",
             extra_kwargs={
                 "tool_name": tool.tool_name,
+                "tool": tool,
                 "job_id": job_id,
                 "context": context,
             },

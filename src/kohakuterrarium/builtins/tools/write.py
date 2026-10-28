@@ -28,6 +28,7 @@ class WriteTool(BaseTool):
     """Write complete file content, creating parent directories as needed."""
 
     needs_context = True
+    path_arguments = {"path": "write"}
     # Serial execution prevents related paths from being mutated concurrently.
     is_concurrency_safe = False
 

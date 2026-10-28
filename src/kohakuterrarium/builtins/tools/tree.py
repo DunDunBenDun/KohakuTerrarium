@@ -170,6 +170,7 @@ class TreeTool(BaseTool):
     """List a bounded directory tree and annotate Markdown metadata."""
 
     needs_context = True
+    path_arguments = {"path": "read"}
 
     @property
     def tool_name(self) -> str:

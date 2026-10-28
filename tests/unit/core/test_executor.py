@@ -12,6 +12,7 @@ from kohakuterrarium.core.events import EventType
 from kohakuterrarium.core.execution_context import ExecutionBinding
 from kohakuterrarium.core.executor import Executor
 from kohakuterrarium.core.job import JobState, JobStore
+from kohakuterrarium.modules.plugin.base import BasePlugin
 from kohakuterrarium.modules.plugin.manager import PluginManager
 from kohakuterrarium.modules.tool.base import (
     BaseTool,
@@ -918,6 +919,28 @@ class TestWrapToolExecuteBuildsContext:
         # Without plugins, returns tool.execute directly (identity by ref
         # may differ due to bound-method per-access; verify it's callable).
         assert callable(out)
+
+    async def test_pre_tool_hooks_receive_the_tool_instance(self, tmp_path):
+        seen = []
+
+        class _Recorder(BasePlugin):
+            name = "recorder"
+
+            async def pre_tool_execute(self, args, **kwargs):
+                seen.append(kwargs.get("tool"))
+
+        plugins = PluginManager()
+        plugins.register(_Recorder())
+        binding = ExecutionBinding(
+            context=ToolContext(agent_name="a", session=None, working_dir=tmp_path),
+            plugins=plugins,
+        )
+        ex = Executor(binding=binding)
+        tool = _EchoTool()
+        ex.register_tool(tool)
+        job = await ex.submit("echo", {"msg": "hi"})
+        assert (await ex.wait_for(job)).output == "hi"
+        assert seen == [tool]
 
 
 class TestRunToolExceptionWithDirect:

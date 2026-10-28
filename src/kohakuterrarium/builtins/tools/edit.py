@@ -198,6 +198,7 @@ class EditTool(BaseTool):
     """Edit one file through exact replacement or standard unified diffs."""
 
     needs_context = True
+    path_arguments = {"path": "write"}
     # Serial execution prevents a concurrent writer from invalidating guard state.
     is_concurrency_safe = False
 

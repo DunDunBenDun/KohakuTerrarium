@@ -251,6 +251,26 @@ async def test_final_arguments_live_selection_and_child_cannot_loosen_parent(tmp
         await gate.check({"path": "secret.txt"}, tool_name="read", context=context)
 
 
+class DeclaredPathTool(ReadTool):
+    path_arguments = {"media": "read"}
+
+    @property
+    def tool_name(self) -> str:
+        return "pkg_media"
+
+
+@pytest.mark.asyncio
+async def test_inherited_sandbox_checks_declared_path_arguments(tmp_path):
+    parent = PluginManager()
+    parent.register(SandboxPlugin(fs_read="workspace"))
+    tool = DeclaredPathTool()
+    gate = ForkToolPolicy(parent)
+    execute = gate.wrap(tool.execute, tool_name="pkg_media", tool=tool)
+    context = ToolContext("child", None, tmp_path)
+    with pytest.raises(PluginBlockError, match="outside working directory"):
+        await execute({"path": "x", "media": "../escape.txt"}, context=context)
+
+
 class BrokenPolicy(BasePlugin):
     inherit_fork_policy = True
 

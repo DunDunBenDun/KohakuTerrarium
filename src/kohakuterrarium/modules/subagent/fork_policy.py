@@ -67,13 +67,13 @@ class ForkToolPolicy:
             ) from exc
 
     def wrap(
-        self, execute: Callable[..., Any], *, tool_name: str
+        self, execute: Callable[..., Any], *, tool_name: str, tool: Any = None
     ) -> Callable[..., Any]:
         """Wrap the final invocation inside any child-owned plugin transforms."""
 
         @functools.wraps(execute)
         async def guarded(args: dict, **kwargs: Any) -> Any:
-            await self.check(args, tool_name=tool_name, **kwargs)
+            await self.check(args, tool_name=tool_name, tool=tool, **kwargs)
             return await execute(args, **kwargs)
 
         return guarded

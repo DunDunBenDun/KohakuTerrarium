@@ -48,6 +48,7 @@ class NotebookReadTool(BaseTool):
     """Read a Jupyter notebook as a concise cell listing."""
 
     needs_context = True
+    path_arguments = {"path": "read"}
 
     @property
     def tool_name(self) -> str:

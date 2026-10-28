@@ -878,6 +878,29 @@ class TestPluginIntegration:
         # The tool was blocked — it never recorded a call.
         assert echo.calls == []
 
+    async def test_pre_tool_execute_receives_the_tool_instance(self):
+        seen = []
+
+        class _Recorder(BasePlugin):
+            name = "recorder"
+
+            async def pre_tool_execute(self, args, **kwargs):
+                seen.append(kwargs.get("tool"))
+
+        echo = _EchoTool()
+        pm = PluginManager()
+        pm.register(_Recorder())
+        llm = ScriptedLLM([_bracket_call("echo", text="hi"), "done"])
+        sa = SubAgent(
+            SubAgentConfig(name="x", tools=["echo"], max_turns=5),
+            _registry(echo),
+            llm,
+            tool_format="bracket",
+            plugin_manager=pm,
+        )
+        await sa.run("call echo")
+        assert seen == [echo]
+
     async def test_post_llm_plugin_rewrites_output(self):
         # A post_llm_call plugin can rewrite the assistant output; the
         # rewritten text is what lands in the result.
