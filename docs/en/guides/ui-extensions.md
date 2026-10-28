@@ -219,6 +219,27 @@ host:
 Runtime owners (plugin / tool / trigger) live in one user's engine, so
 their pushes reach every subscriber of that creature.
 
+### Host-wide resources
+
+Some package resources belong to the whole host, not to one user (a chat
+bot bound to the host, a hardware device). Code inside a creature asks
+whether it may use them:
+
+```python
+from kohakuterrarium.terrarium import host_resources_allowed
+
+if not host_resources_allowed(context):  # ToolContext / PluginContext /
+    raise PermissionError("...")          # bound trigger / Agent
+```
+
+The answer comes from the engine's `host_resources` flag
+(`Terrarium(host_resources=...)`, default `True`). A solo agent, or a
+source not inside any engine, counts as allowed. On a multi-user host the
+API layer sets the flag per user engine: `True` for admin users, `False`
+for everyone else and for the anonymous slot, refreshed on each request so
+a role change applies to the live engine. Single-user hosts, `kt run` and
+the CLI keep `True`.
+
 The built-in `budget` plugin is a working example (`ui_state()` plus a
 `"state"` push after every turn and tool call).
 

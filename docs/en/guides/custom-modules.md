@@ -82,6 +82,24 @@ Provider-native tools are a different category again. If you build one, set
 `is_provider_native = True` and `provider_support = frozenset({...})`; the
 executor will skip it and the provider will handle it on the wire.
 
+### File-path arguments
+
+A tool that reads or writes files names those arguments in
+`path_arguments`, mapping each argument to `"read"` or `"write"`:
+
+```python
+class UploadTool(BaseTool):
+    path_arguments = {"media": "read", "save_to": "write"}
+```
+
+The built-in `sandbox` plugin then applies its `fs_read` / `fs_write` /
+`fs_deny` policy to every declared argument before the tool runs. A value
+may be one path or a list of paths; relative paths resolve against the
+agent's working directory, as `ToolContext.resolve_path` does. Without
+the declaration the sandbox cannot see the path, so a package tool that
+touches files should always declare it. Plugins receive the tool
+instance as the `tool` keyword of `pre_tool_execute`.
+
 ### Media in tool results
 
 A tool that returns `ImagePart` / `FilePart` media declares a
@@ -301,6 +319,17 @@ triggers:
     options: { interval: 60 }
     prompt: "Check the dashboard."
 ```
+
+Every registered trigger learns its host through
+`bind_host(creature_id, agent_name, agent)`. The trigger manager calls it
+when the trigger is added (from config, at runtime, by a setup tool, or on
+resume) and again whenever the host identity changes. The default stores
+`self.host_creature_id`, `self.host_agent_name` and a weak reference to
+the agent, readable as `self.host_agent` (`None` once the agent is gone).
+`host_creature_id` is the engine creature id when a Terrarium hosts the
+agent, and the agent's config name for a solo agent; two creatures built
+from the same config get different ids. Use it for per-creature keys such
+as cursors. An override should call `super().bind_host(...)`.
 
 `universal: True` marks the class as setup-able by the agent. Fill in `setup_tool_name`, `setup_description`, `setup_param_schema`, and (optionally) `setup_full_doc` on the class; declare an entry under `tools:` with `type: trigger` and `name: <setup_tool_name>` in the creature config. The framework wraps the class as a tool named after `setup_tool_name`, and calling it installs the trigger in the background via the agent's `TriggerManager`.
 
