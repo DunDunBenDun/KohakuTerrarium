@@ -47,6 +47,7 @@ from kohakuterrarium.core.event_inbox import EventInbox, TurnOutcome
 from kohakuterrarium.core.events import TriggerEvent, create_user_input_event
 from kohakuterrarium.core.job import JobState
 from kohakuterrarium.core.loader import ModuleLoader
+from kohakuterrarium.core.pinned import sync_with_store as sync_pinned_with_store
 from kohakuterrarium.core.session import Session
 from kohakuterrarium.core.token_ledger import context_window
 from kohakuterrarium.core.trigger_manager import TriggerManager
@@ -860,6 +861,7 @@ class Agent(
             self.compact_manager._session_store = store
         if store is None:
             return
+        sync_pinned_with_store(self, store)
         if self.compact_manager:
             restore_compact_state_from_session(
                 self.compact_manager, store, self.config.name

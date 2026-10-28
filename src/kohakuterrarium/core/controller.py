@@ -42,6 +42,7 @@ from kohakuterrarium.core.controller_context import (
 from kohakuterrarium.core.executor import Executor
 from kohakuterrarium.core.inline_upload import materialize_upload
 from kohakuterrarium.core.job import JobResult, JobStatus, JobStore
+from kohakuterrarium.core.pinned import PinnedContext
 from kohakuterrarium.core.registry import Registry
 from kohakuterrarium.core.tool_output import materialize_image_part
 from kohakuterrarium.errors import InvalidRequestError
@@ -188,6 +189,7 @@ class Controller:
             sanitize_orphan_tool_calls=self.config.sanitize_orphan_tool_calls,
         )
         self.conversation = Conversation(conv_config)
+        self.pinned = PinnedContext()
 
         # Token usage tracking
         self._last_usage: dict[str, int] = {}
@@ -858,23 +860,18 @@ class Controller:
                 msg.metadata.update(tool_feedback_metadata(events))
             msg.metadata.update(origin)
 
-        messages = self.conversation.to_messages()
+        messages = self.pinned.apply(self.conversation.to_messages())
         messages = await self._resolve_message_files(messages)
 
-        # Insert after all system messages so plugin context is early while
-        # remaining visible to every pre-LLM hook.
+        # Insert after the system block and pins so plugin context is early
+        # while remaining visible to every pre-LLM hook.
         injected = self._pending_injections
         self._pending_injections = []
         if self._skill_path_hint:
             # A fresh dict prevents a pre-hook from mutating the turn snapshot.
             injected = [{"role": "user", "content": self._skill_path_hint}, *injected]
         if injected:
-            insert_idx = 0
-            for i, msg in enumerate(messages):
-                if msg.get("role") == "system":
-                    insert_idx = i + 1
-                else:
-                    break
+            insert_idx = self.pinned.context_end(messages)
             messages = (
                 list(messages[:insert_idx])
                 + list(injected)

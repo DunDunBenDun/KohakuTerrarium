@@ -35,6 +35,9 @@ from kohakuterrarium.core import agent_message_history as _message_history_mod
 from kohakuterrarium.core.agent import Agent
 from kohakuterrarium.core.branch_continuation import selected_branch_view
 from kohakuterrarium.core.events import create_user_input_event
+from kohakuterrarium.core.pinned import pin_message, unpin_message
+from kohakuterrarium.core.pinned import state_key as pinned_state_key
+from kohakuterrarium.llm.message import ImagePart, TextPart
 from kohakuterrarium.modules.tool.base import BaseTool, ExecutionMode, ToolResult
 from kohakuterrarium.modules.trigger.timer import TimerTrigger
 from kohakuterrarium.session import history as _history_mod
@@ -154,6 +157,9 @@ def patched_llm(monkeypatch):
 CHILD = "tests.helpers.live_store_stress_child"
 
 
+_PIN_PIXEL = "data:image/png;base64,iVBORw0KGgo="
+
+
 def _write_agent_config(config_dir, name: str = "scribe") -> str:
     """Write a minimal but complete creature config dir. Returns the path."""
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -217,6 +223,12 @@ class TestSessionIntegration:
         agent.attach_session_store(store)
         await agent.start()
         try:
+            pin_message(
+                agent,
+                "persona",
+                "user",
+                [TextPart(text="PINNED-PERSONA"), ImagePart(url=_PIN_PIXEL)],
+            )
             await agent._process_event(create_user_input_event("introduce yourself"))
             await agent._process_event(create_user_input_event("use the echo tool"))
             # Drive the SessionOutput activity surface the runtime uses:
@@ -714,6 +726,20 @@ class TestSessionIntegration:
             # the surviving timer is staged, never the removed one.
             staged = getattr(resumed_agent, "_pending_resume_triggers", None)
             assert staged and staged[0]["trigger_id"] == t2_id
+            # The pin came back once, from session state, outside the history.
+            pins = resumed_agent.controller.pinned
+            assert [key for key, _ in pins.pinned()] == ["persona"]
+            assert pins.image_count() == 1
+            assert "PINNED-PERSONA" not in str(resumed_messages)
+            wire = pins.apply(resumed_messages)
+            assert wire[1]["content"][0]["text"] == "PINNED-PERSONA"
+            assert str(wire).count("PINNED-PERSONA") == 1
+            pin_message(resumed_agent, "persona", "user", "PINNED-PERSONA v2")
+            saved = resumed_store.state[pinned_state_key("scribe")]
+            assert [e["message"]["content"] for e in saved] == ["PINNED-PERSONA v2"]
+            assert unpin_message(resumed_agent, "persona") is True
+            assert resumed_store.state[pinned_state_key("scribe")] == []
+            assert len(pins) == 0
         finally:
             await resumed_agent.stop()
             resumed_store.close()
@@ -1578,6 +1604,7 @@ class TestSessionIntegration:
         agent.attach_session_store(store)
         await agent.start()
         try:
+            pin_message(agent, "persona", "user", "PINNED-PERSONA")
             await agent._process_event(create_user_input_event("turn one"))
             await agent._process_event(create_user_input_event("turn two"))
             await agent._process_event(create_user_input_event("turn three"))
@@ -1712,6 +1739,13 @@ class TestSessionIntegration:
             # truncated event log — the leaf is turn 2, branch 1.
             assert forked_agent._turn_index == 2
             assert forked_agent._branch_id == 1
+            # The fork carries the pin once, outside its replayed history.
+            assert [k for k, _ in forked_agent.controller.pinned.pinned()] == [
+                "persona"
+            ]
+            assert "PINNED-PERSONA" not in str(
+                forked_agent.controller.conversation.to_messages()
+            )
         finally:
             forked_store.close()
 

@@ -179,7 +179,9 @@ class AgentCompactMixin:
         controller = getattr(self, "controller", None)
         if controller is None:
             return None
-        return controller.conversation.to_messages()
+        messages = controller.conversation.to_messages()
+        pins = getattr(controller, "pinned", None)
+        return pins.apply(messages) if pins is not None else messages
 
     def _build_compact_llm(self, compact_cfg: CompactConfig) -> Any:
         """Build an isolated LLM instance for compaction.

@@ -63,6 +63,7 @@ from kohakuterrarium.core.events import (
     create_tool_complete_event,
     create_user_input_event,
 )
+from kohakuterrarium.core.pinned import pin_message
 from kohakuterrarium.core.turn import Activity, TurnCapture
 from kohakuterrarium.llm.message import FilePart, ImagePart, TextPart
 from kohakuterrarium.llm.artifact_resolve import resolve_artifact_url
@@ -2098,11 +2099,22 @@ class TestCoreIntegration:
             assert agent.compact_manager.config.threshold == 0.5
             assert agent.compact_manager.config.target == 0.2
             assert agent._termination_checker.is_active is True
+            pin_message(agent, "persona", "user", "PINNED-PERSONA")
+            summarizer_inputs: list[str] = []
+            real_summarize = agent.compact_manager._summarize
+
+            async def spy_summarize(text):
+                summarizer_inputs.append(text)
+                return await real_summarize(text)
+
+            agent.compact_manager._summarize = spy_summarize
 
             # Run several turns to build a conversation long enough for
             # the compact manager to have something to summarize.
             for word in ("one", "two", "three", "four"):
                 await _drain_chat(creature, f"turn {word}")
+            sent = agent.controller.llm.call_log[-1]
+            assert sent[1]["content"] == "PINNED-PERSONA"
             agent._reload_conversation_under_branch_view({1: 1})
             conversation = agent.controller.conversation
             before_drop = conversation.snapshot_messages()
@@ -2157,6 +2169,13 @@ class TestCoreIntegration:
             # replaced the older turns, so the message count dropped.
             msgs_after = len(agent.controller.conversation.get_messages())
             assert msgs_after < msgs_before
+            # The pin stayed out of the summary and out of the history.
+            assert summarizer_inputs
+            assert all("PINNED-PERSONA" not in text for text in summarizer_inputs)
+            assert [key for key, _ in agent.controller.pinned.pinned()] == ["persona"]
+            assert "PINNED-PERSONA" not in str(
+                agent.controller.conversation.snapshot_messages()
+            )
 
             # A second trigger right after a successful compaction with
             # usage still high fires another compaction (cooldown is 0s),
@@ -2179,6 +2198,12 @@ class TestCoreIntegration:
             # checker stops the agent inside the controller loop.
             await _drain_chat(creature, "turn five")
             assert "ALL DONE" in _assistant_text(agent)
+            # After compaction the request is: system, pin, summary, live turns.
+            sent = agent.controller.llm.call_log[-1]
+            assert sent[0]["role"] == "system"
+            assert sent[1]["content"] == "PINNED-PERSONA"
+            assert sent[2]["content"].startswith("[Previous context summary")
+            assert str(sent).count("PINNED-PERSONA") == 1
             assert agent.is_running is False
             assert "ALL DONE" in (agent._termination_checker.reason or "")
             # After termination the engine reports the creature stopped.
@@ -2521,6 +2546,8 @@ class TestCoreIntegration:
             # persistence-wiring path.
             store = SessionStore(str(creature.agent.config.agent_path / "s.kohakutr"))
             agent.attach_session_store(store)
+            # A pin never shifts history indices and survives every history op.
+            pin_message(agent, "persona", "user", "PINNED-PERSONA")
 
             # --- Run the initial turn ----------------------------------
             await _drain_chat(creature, "first question")
@@ -2610,6 +2637,14 @@ class TestCoreIntegration:
             assert roles == ["system"]
             # rewind does not invoke the LLM.
             assert agent.llm.call_count == 5
+            assert [key for key, _ in agent.controller.pinned.pinned()] == ["persona"]
+            assert all(
+                log[1]["content"] == "PINNED-PERSONA" for log in agent.llm.call_log
+            )
+            assert not any(
+                m.metadata.get("pinned")
+                for m in agent.controller.conversation.get_messages()
+            )
 
             # --- workspace: runtime working-directory switch -----------
             # ``agent.workspace`` is wired by ``init_agent_helpers``; it
@@ -2743,10 +2778,10 @@ class TestCoreIntegration:
             assert continuation["turn_index"] == 2
             assert continuation["branch_id"] == max(previous_branches) + 1
             assert continuation["parent_branch_path"] == [[1, 1]]
+            assert agent.llm.call_log[-1][1]["content"] == "PINNED-PERSONA"
             continued = [
                 (message.get("role"), message.get("content"))
-                for message in agent.llm.call_log[-1]
-                if message.get("role") != "system"
+                for message in agent.llm.call_log[-1][2:]
             ]
             assert continued[0] == ("user", "first question")
             assert ("assistant", "original reply") in continued
