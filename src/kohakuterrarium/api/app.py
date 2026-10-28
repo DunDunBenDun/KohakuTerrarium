@@ -17,11 +17,15 @@ from fastapi.staticfiles import StaticFiles
 from kohakuterrarium.api._io_executor import run_in_io_executor
 from kohakuterrarium.api.auth import load_auth_config
 from kohakuterrarium.api.auth import router as auth_router
+from kohakuterrarium.api.auth.asset_token import new_asset_secret
 from kohakuterrarium.api.boot_restore import auto_resume_enabled, restore_on_boot
 from kohakuterrarium.api.auth.db import ensure_migrated as ensure_auth_migrated
 from kohakuterrarium.api.auth.engine_pool import EnginePool
 from kohakuterrarium.api.auth.middleware import HostTokenMiddleware
 from kohakuterrarium.api.deps import _session_dir, get_engine, set_service
+from kohakuterrarium.api.ext import owner_routes as ext_owner_routes
+from kohakuterrarium.api.ext import routes as ext_ui_routes
+from kohakuterrarium.api.ext.dispatcher import ExtensionDispatcher
 from kohakuterrarium.errors import ConflictError, KTError, NotFoundError
 from kohakuterrarium.terrarium.drive.errors import (
     DriveBackpressureError,
@@ -513,6 +517,8 @@ def create_app(
     # Freeze one auth configuration per application instance so all requests
     # observe coherent policy even if process environment variables change.
     app.state.auth_config = load_auth_config()
+    # Signs the path-embedded tokens on package UI asset URLs.
+    app.state.ui_asset_secret = new_asset_secret()
 
     # User-authenticated requests receive isolated Terrarium instances; other
     # modes bypass this pool. Each engine resolves a fresh immutable snapshot of
@@ -657,6 +663,19 @@ def create_app(
     # Mount the concern-specific API surfaces under their canonical prefixes.
     _mount_phase0_stubs(app)
 
+    # Package UI: contribution listing, then assets and package API routes.
+    app.include_router(
+        ext_ui_routes.router, prefix="/api/extensions/ui", tags=["extensions"]
+    )
+    app.include_router(
+        ext_owner_routes.router, prefix="/api/extensions/owner", tags=["extensions"]
+    )
+    app.include_router(ext_owner_routes.ws_router, tags=["ws"])
+    app.mount(
+        "/api/ext",
+        ExtensionDispatcher(app, configure_subapp=_configure_extension_app),
+    )
+
     # WebSocket routes
     app.include_router(ws_daemon_logs.router, tags=["ws"])
     app.include_router(ws_files.router, tags=["ws"])
@@ -673,6 +692,13 @@ def create_app(
         _mount_spa(app, static_dir)
 
     return app
+
+
+def _configure_extension_app(sub: FastAPI) -> None:
+    """Give a package API sub-app the host's typed-error handlers."""
+    sub.add_exception_handler(KTError, kt_error_handler)
+    sub.add_exception_handler(DriveError, drive_error_handler)
+    sub.add_exception_handler(RequestTimeoutError, lab_transport_error_handler)
 
 
 def _mount_phase0_stubs(app: FastAPI) -> None:

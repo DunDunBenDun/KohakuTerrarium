@@ -1498,6 +1498,64 @@ class TestApiIntegration:
         resp = client.delete("/api/sessions/active/terrariums/ghost-sid")
         assert resp.status_code == 404
 
+        # 5d. UI owner RPC against a live plugin: the built-in budget
+        #     panel's ``useOwner()`` path (state → push on a turn → scope).
+        bud_dir = tmp_path / "bud"
+        bud_dir.mkdir()
+        (bud_dir / "config.yaml").write_text(
+            _CREATURE_CONFIG.replace("name: alice", "name: bud")
+            + "plugins:\n  - name: budget\n    options:\n"
+            + "      turn_budget: {soft: 5, hard: 10}\n",
+            encoding="utf-8",
+        )
+        resp = client.post(
+            "/api/sessions/active/agents", json={"config_path": str(bud_dir)}
+        )
+        assert resp.status_code == 200
+        bud_sid = resp.json()["session_id"]
+        bud_cid = resp.json()["agent_id"]
+        bud_ref = {
+            "owner": "plugin:budget",
+            "session_id": bud_sid,
+            "creature_id": "bud",
+        }
+        resp = client.post("/api/extensions/owner/state", json=bud_ref)
+        assert resp.status_code == 200
+        bud_state = resp.json()["state"]
+        assert bud_state["configured"] is True
+        assert bud_state["axes"]["turn"]["used"] == 0
+        assert bud_state["axes"]["turn"]["hard"] == 10
+        # Negative: alice has no budget plugin; bud is not in alice's session.
+        resp = client.post(
+            "/api/extensions/owner/state",
+            json={**bud_ref, "session_id": session_id, "creature_id": creature_id},
+        )
+        assert resp.json()["detail"]["error"] == "owner_not_loaded"
+        resp = client.post(
+            "/api/extensions/owner/call",
+            json={**bud_ref, "session_id": session_id, "action": "x"},
+        )
+        assert resp.status_code == 404
+        # The budget plugin accepts no UI actions.
+        resp = client.post(
+            "/api/extensions/owner/call", json={**bud_ref, "action": "reset"}
+        )
+        assert resp.status_code == 400
+        with client.websocket_connect("/ws/extensions/owner") as owner_ws:
+            owner_ws.send_json({"op": "subscribe", "id": "b", **bud_ref})
+            assert owner_ws.receive_json()["type"] == "subscribed"
+            bud_url = f"/ws/sessions/{bud_sid}/creatures/{bud_cid}/chat"
+            with client.websocket_connect(bud_url) as bud_ws:
+                assert bud_ws.receive_json()["activity_type"] == "session_info"
+                _stream_turn(bud_ws, "count this turn")
+            push = owner_ws.receive_json()
+            assert push["event"] == "state"
+            assert push["data"]["axes"]["turn"]["used"] == 1
+        resp = client.delete(f"/api/sessions/active/{bud_sid}")
+        assert resp.status_code == 200
+        resp = client.post("/api/extensions/owner/state", json=bud_ref)
+        assert resp.status_code == 404
+
         # 6. DELETE the session — it leaves the active list.
         resp = client.delete(f"/api/sessions/active/{session_id}")
         assert resp.status_code == 200
