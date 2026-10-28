@@ -35,6 +35,10 @@ vi.mock("@/utils/i18n", () => ({
 }))
 
 import SettingsPage from "./SettingsPage.vue"
+import {
+  registerSettingsSection,
+  unregisterSettingsSection,
+} from "@/stores/settingsSectionRegistry"
 import { configAPI, settingsAPI } from "@/utils/api"
 
 function mountSettingsPage() {
@@ -318,5 +322,23 @@ describe("SettingsPage model presets", () => {
     expect(success).toHaveBeenCalledWith("settings.models.defaultSet:anthropic/claude-opus-4.8")
     expect(error).not.toHaveBeenCalled()
     expect(wrapper.vm.editorPreset).toEqual(refreshed)
+  })
+
+  it("renders registered sections in order between the built-in ones", async () => {
+    const DemoSection = { name: "DemoSection", template: "<p>demo body</p>" }
+    registerSettingsSection({ id: "ext:demo/s", label: "Demo", order: 15, component: DemoSection })
+    try {
+      const wrapper = mountSettingsPage()
+      await flushPromises()
+      const ids = wrapper.vm.sections.map((s) => s.id)
+      expect(ids.slice(0, 3)).toEqual(["providers", "ext:demo/s", "models"])
+      expect(ids).not.toContain("sites")
+      expect(wrapper.findComponent(DemoSection).exists()).toBe(true)
+      unregisterSettingsSection("ext:demo/s")
+      await flushPromises()
+      expect(wrapper.findComponent(DemoSection).exists()).toBe(false)
+    } finally {
+      unregisterSettingsSection("ext:demo/s")
+    }
   })
 })
