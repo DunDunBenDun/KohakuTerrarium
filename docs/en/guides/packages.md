@@ -138,6 +138,14 @@ Collision policy is intentionally mixed:
 - procedural skills are the exception: they are last-wins, with narrower scope
   (project/user/creature) overriding package-shipped copies.
 
+### Dashboard UI (`ui:`)
+
+A package can add settings sections, tabs, rail groups, plugin side panels
+and in-chat tool / trigger renderers to the web dashboard. Every
+contribution names its owner module, and its components talk to that owner
+with `useOwner()`. See [UI extensions](ui-extensions.md) for the schema;
+`kt extension new <name> --ui` scaffolds a working example.
+
 ### Custom LLM backends (`llm_backends:`)
 
 A package can add a new backend type, a transport for talking to a model,
