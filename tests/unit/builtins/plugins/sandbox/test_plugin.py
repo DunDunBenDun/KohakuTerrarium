@@ -208,6 +208,25 @@ class TestDeclaredPathArguments:
                 context=context,
             )
 
+    async def test_relative_deny_entry_resolves_against_the_working_dir(
+        self, paths, monkeypatch, tmp_path
+    ):
+        work, _, context = paths
+        (work / "private").mkdir()
+        (work / "private" / "x.png").write_bytes(b"x")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        with pytest.raises(PluginBlockError, match="path is denied"):
+            await SandboxPlugin(
+                fs_read="workspace", fs_deny=["private"]
+            ).pre_tool_execute(
+                {"media": "private/x.png"},
+                tool_name="pkg_upload",
+                tool=_UploadTool(),
+                context=context,
+            )
+
     async def test_allowed_path_passes(self, paths):
         _, _, context = paths
         result = await SandboxPlugin(fs_read="workspace").pre_tool_execute(

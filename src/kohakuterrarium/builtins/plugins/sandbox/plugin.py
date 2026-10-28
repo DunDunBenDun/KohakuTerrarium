@@ -269,7 +269,7 @@ class SandboxPlugin(BasePlugin):
             path if literal else Path(os.path.expandvars(str(path))).expanduser()
         ).resolve()
         for denied in self._profile.fs_deny:
-            denied_path = Path(os.path.expandvars(denied)).expanduser().resolve()
+            denied_path = _resolve(denied, cwd).resolve()
             if _is_relative_to(resolved, denied_path):
                 self._violate(axis, str(path), f"{tool_name}: path is denied")
         if level == "deny":
