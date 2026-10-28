@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+from kohakuterrarium.core.pinned import pin_message, unpin_message
 from kohakuterrarium.modules.ui_owner import UIOwnerMixin
 from kohakuterrarium.modules.plugin.option_validation import (
     validate_plugin_options,
@@ -186,6 +187,23 @@ class PluginContext:
             queue = []
             controller._pending_injections = queue
         queue.append({"role": role, "content": content})
+
+    def pin_message(self, key: str, role: str, content: str | list) -> bool:
+        """Pin a message right after the system prompt; compaction keeps it.
+
+        Replaces an existing pin with the same key. Returns False when the
+        context is not bound to an agent.
+        """
+        agent = self._host_agent
+        if agent is None:
+            return False
+        pin_message(agent, key, role, content)
+        return True
+
+    def unpin_message(self, key: str) -> bool:
+        """Remove the pin ``key``; return whether it existed."""
+        agent = self._host_agent
+        return unpin_message(agent, key) if agent is not None else False
 
     def _state_key(self, key: str) -> str:
         if not self.agent_name:
